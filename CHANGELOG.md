@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Changed
+- Adopt current schema-6 immutable Reviewer Assignments, concrete role-first
+  standalone Review wording, four-product executor/reviewer eligibility, and
+  bound-Codex control-plane authority while keeping schema 4/5 audit-only.
+- Add Pi to the required portable runtime closure and document its Skill and
+  managed global-rule roots; all four targets must pass before completion.
 - Keep route selection, standalone behavior, and shared authority/Git boundaries
   in `SKILL.md`, while loading the complete external-batch governor on demand
   from `references/handed-off-external-execution.md` only for valid Handoffs.

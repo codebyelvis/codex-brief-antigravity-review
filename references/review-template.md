@@ -1,5 +1,22 @@
 # Review Result: PASS / FAIL / BLOCKED
 
+## Schema 6 Reviewer Assignment
+
+| Field | Bound value |
+|---|---|
+| Review purpose object | `<reviewed object>` |
+| Review purpose decision | `<PASS/FAIL/BLOCKED decision boundary>` |
+| reviewer product | `<codex/pi/antigravity-cli/grok-cli>` |
+| reviewer instance | `<contract-local instance>` |
+| reviewer role | `<independent-reviewer or compact control-plane>` |
+| capability profile | `<control-plane-high>` |
+| `distinct_from` | `<control_plane_owner, executor_assignment or executor_assignment>` |
+| result authority | `governed Review evidence only` |
+
+These fields reproduce the immutable schema 6 `reviewer_assignment`; schema-2
+evidence identity must match this parent assignment and never promotes
+canonical state by itself.
+
 文档类型：Review
 日志及版本：YYYY-MM-DD v1
 批次及尝试：Step <NN> Attempt <AA>
@@ -29,8 +46,10 @@ capability_profile: control-plane-high
 
 Standard/strict batch Review 的 product/instance/role/profile 必须等于
 immutable reviewer assignment，且 reviewer instance 不同于 executor instance；
-产品相同也不能 self-review。Compact null reviewer、Preflight 与 final Review
-绑定 control-plane assignment。别名、实例冒充和 executor self-review 均无效。
+产品相同也不能 self-review。Compact 把完整 reviewer assignment 绑定到
+control-plane identity、保持与 executor instance 不同，并记录顶层非空
+not-applicable reason。Preflight 与 final Review 使用各自 immutable assignment。
+别名、实例冒充和 executor self-review 均无效。
 
 Preflight 只使用 `PASS`/`BLOCKED`。仅 `BLOCKED` Preflight 以
 `preflight-review: blocked` 绑定 canonical `blocked` 状态；Preflight
@@ -118,7 +137,7 @@ git status --short
 | 字段 | Brief | Report/Status | 结论 |
 |---|---|---|---|
 | `change_id` | `<value>` | `<value>` | PASS/FAIL/BLOCKED |
-| `schema_version` | `5` | `5` | PASS/FAIL/BLOCKED |
+| `schema_version` | `6` | `6` | PASS/FAIL/BLOCKED |
 | Execution revision | Brief `<n>` | Report `<n>` | PASS/FAIL/BLOCKED |
 | Execution canonical SHA-256 | Brief `<hash>` | Report/recomputed `<hash>` | PASS/FAIL/BLOCKED |
 | Review revision | expected `<n+1>` | canonical status `<n+1>` | PASS/FAIL/BLOCKED |

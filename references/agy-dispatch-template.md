@@ -1,5 +1,22 @@
 # Antigravity CLI Dispatch Template
 
+## Schema 6 Reviewer Assignment
+
+| Field | Bound value |
+|---|---|
+| Review purpose object | `<reviewed object>` |
+| Review purpose decision | `<PASS/FAIL/BLOCKED decision boundary>` |
+| reviewer product | `<codex/pi/antigravity-cli/grok-cli>` |
+| reviewer instance | `<contract-local instance>` |
+| reviewer role | `<independent-reviewer or compact control-plane>` |
+| capability profile | `<control-plane-high>` |
+| `distinct_from` | `<control_plane_owner, executor_assignment or executor_assignment>` |
+| result authority | `governed Review evidence only` |
+
+These fields reproduce the immutable schema 6 `reviewer_assignment`; schema-2
+evidence identity must match this parent assignment and never promotes
+canonical state by itself.
+
 ```bash
 agy --print-timeout 30m --print "$(cat <<'EOF'
 项目路径：<project-path>
@@ -27,7 +44,7 @@ docs/agent-collab/<change-id>/<NN>-attempt-<AA>-report-abort.md
 - 禁止 git add / git commit / git reset / git clean
 - 必须运行 Brief 中列出的验证命令
 - 不得修改 canonical status 或复制 Handoff Contract marker block
-- 报告必须记录 schema_version 5 / contract_revision / batch / attempt 指纹和
+- 报告必须记录 schema_version 6 / contract_revision / batch / attempt 指纹和
   与 Brief 相同的 canonical SHA-256
 - 报告必须内嵌完整 schema-2 `attempt-report` evidence manifest；result、
   change、batch、attempt、execution revision/SHA-256、agent product/instance/

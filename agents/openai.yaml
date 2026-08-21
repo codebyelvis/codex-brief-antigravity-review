@@ -1,7 +1,7 @@
 interface:
   display_name: "Codex Brief / Antigravity Review"
   short_description: "Write read-only prompts or review handed-off evidence"
-  default_prompt: "Use $codex-brief-antigravity-review only for non-state-changing prompt wording, ordinary read-only review, or dispatch/review of a valid Handoff-backed batch including a manually copied state-changing standard/strict Brief; return file edits, review-and-fix, workflow changes, and final completion decisions to openspec-superpower-change."
+  default_prompt: "Use $codex-brief-antigravity-review only for non-state-changing prompt wording, ordinary read-only review, or dispatch/review of a valid Handoff-backed batch; return state-changing work to openspec-superpower-change. Review purpose: inspect the current implementation plan and decide PASS or BLOCKED; reviewer product: codex; role: independent-reviewer; capability: control-plane-high; independence: a user-opened new-window instance distinct from the plan author and executor; authority: governed Review evidence only."
 
 policy:
   allow_implicit_invocation: true

@@ -2,8 +2,10 @@
 
 The Handoff Contract is the single machine-readable state shared by
 `openspec-superpower-change` and `codex-brief-antigravity-review`. Schema version
-5 applies only to newly created Handoff-backed external execution; standalone
-and inline work do not create this contract.
+6 is the only current Handoff API for newly created external execution;
+standalone and inline work do not create this contract. Completed schema-4/5
+contracts remain immutable history and are available only to the read-only
+legacy audit path.
 
 ## Canonical Location
 
@@ -17,7 +19,7 @@ revision, batch, attempt, and SHA-256 fingerprint.
 ````markdown
 <!-- COOP_HANDOFF_CONTRACT_START -->
 ```yaml
-schema_version: 5
+schema_version: 6
 change_id: add-example-change
 mode: approved-implementation
 approval_status: approved
@@ -50,11 +52,20 @@ executor_assignment:
   agent_instance_id: antigravity-executor-01
   agent_role: executor
   capability_profile: cohesive-medium
-independent_reviewer_assignment:
+reviewer_assignment:
+  review_purpose:
+    object: current batch implementation, Report, contract, and evidence
+    decision: decide pass, fail, or blocked for this governed Review gate
   agent_product: grok-cli
   agent_instance_id: grok-reviewer-01
   agent_role: independent-reviewer
   capability_profile: control-plane-high
+  independence_requirement:
+    kind: distinct-contract-instance
+    distinct_from:
+      - control_plane_owner
+      - executor_assignment
+  result_authority: governed-review-evidence
 independent_review_not_applicable_reason: null
 decision_source: ai-proposed/user-approved
 confirmation_lease:
@@ -90,7 +101,7 @@ readonly_fields:
   - governor
   - control_plane_owner
   - executor_assignment
-  - independent_reviewer_assignment
+  - reviewer_assignment
   - independent_review_not_applicable_reason
   - decision_source
   - confirmation_lease
@@ -121,9 +132,15 @@ Required fields include every field in the example.
   non-blank strings for every evidence profile.
 - `readonly_fields`: exactly the immutable field set shown above, without
   duplicates or additional mutable fields.
-- `control_plane_owner`, `executor_assignment`, and a concrete
-  `independent_reviewer_assignment` contain exactly `agent_product`,
-  `agent_instance_id`, `agent_role`, and `capability_profile`.
+- `control_plane_owner` and `executor_assignment` contain exactly
+  `agent_product`, `agent_instance_id`, `agent_role`, and
+  `capability_profile`.
+- `reviewer_assignment` is always present and contains exactly
+  `review_purpose`, `agent_product`, `agent_instance_id`, `agent_role`,
+  `capability_profile`, `independence_requirement`, and `result_authority`.
+  Purpose contains exactly non-blank `object` and `decision`; independence
+  uses `distinct-contract-instance`; result authority is exactly
+  `governed-review-evidence` and never grants canonical decision authority.
 - The control plane is product `codex`, role `control-plane`, profile
   `control-plane-high`. It alone records authoritative transitions and final
   completion.
@@ -133,8 +150,12 @@ Required fields include every field in the example.
 - Every assigned `agent_instance_id` is a non-sensitive contract-local ID and
   differs from every other assigned instance. Product equality never permits
   self-review.
-- `independent_review_not_applicable_reason` is non-blank only for compact work
-  with a null reviewer assignment; otherwise it is `null`.
+- For standard/strict work, reviewer role is `independent-reviewer`, profile is
+  `control-plane-high`, independence names both owner and executor, all three
+  instance IDs differ, and `independent_review_not_applicable_reason` is null.
+  For compact work, reviewer product/instance/role/profile equal the control
+  plane, independence names only the executor, and the top-level reason is
+  non-blank.
 - `decision_source` is one of `ai-proposed/user-approved`, `user-originated`,
   `user-corrected`, `evidence-discovered`, `deferred`, or `revoked`.
 - `confirmation_lease` is an immutable decision-ID/path/SHA-256 reference to a
@@ -185,14 +206,14 @@ Valid roles are `attempt-report`, `batch-review`, `preflight-review`,
 revision that the artifact reports on, reviews, or verifies; this source
 fingerprint avoids a hash cycle with the new artifact reference.
 
-For schema-5 evidence, `agent_product`, `agent_instance_id`, `agent_role`, and
+For schema-6 evidence, `agent_product`, `agent_instance_id`, `agent_role`, and
 `capability_profile` exactly match the canonical assignment. Attempt Reports
-bind the executor assignment. Batch Reviews bind the independent reviewer,
-except a compact null-reviewer path binds the control plane. Preflight Review,
+bind the executor assignment. Batch Reviews bind `reviewer_assignment`.
+Preflight Review,
 timeout audit, final verification, and final Review bind the control plane. The
 timeout-audit shared-artifact exception keeps that control-plane identity even
 when it occupies the Report field. Historical schema-4 contracts retain their
-existing schema-1 `agent_identity` evidence and are never rewritten as schema 5.
+existing schema-1 `agent_identity` evidence and are never rewritten as schema 6.
 
 Runtime status validation checks file existence, non-empty content, SHA-256,
 role-to-state binding, result-to-status binding, batch/attempt freshness, source
@@ -319,12 +340,13 @@ retained in repository evidence/history. A hostile actor able to forge the
 prior state and all artifacts is outside this lightweight validator's threat
 model; append-only journals or signatures would be a separate, heavier design.
 
-## Upgrade From Schema 4
+## Upgrade From Schemas 4 And 5
 
-Schema 5 is a hard switch for contracts created after deployment. Before the
-switch, inventory every known active schema-4 canonical status and require it to
-reach `complete` under the existing v4 workflow. Do not rewrite, silently
-migrate, ignore, or abandon an active v4 contract. Retain the no-active-v4
-inventory result as upgrade evidence. Historical complete v4 contracts and
-their schema-1 evidence remain immutable history and are not revalidated as new
-schema-5 contracts or schema-2 evidence.
+Schema 6 is a hard switch for contracts created after deployment. Before the
+switch, inventory every known active schema-4/schema-5 canonical status and
+require it to reach `complete` under the matching old workflow. Do not rewrite,
+silently migrate, resume after cutover, ignore, or abandon an active old
+contract. Retain the no-active-legacy inventory result as upgrade evidence.
+Historical complete schema-4/schema-5 contracts and their evidence remain
+byte-immutable history; they cannot produce current PASS, transition, resume,
+or completion authority.

@@ -1,5 +1,22 @@
 # <change-id> Step <NN> Attempt <AA> 执行报告
 
+## Schema 6 Reviewer Assignment
+
+| Field | Bound value |
+|---|---|
+| Review purpose object | `<reviewed object>` |
+| Review purpose decision | `<PASS/FAIL/BLOCKED decision boundary>` |
+| reviewer product | `<codex/pi/antigravity-cli/grok-cli>` |
+| reviewer instance | `<contract-local instance>` |
+| reviewer role | `<independent-reviewer or compact control-plane>` |
+| capability profile | `<control-plane-high>` |
+| `distinct_from` | `<control_plane_owner, executor_assignment or executor_assignment>` |
+| result authority | `governed Review evidence only` |
+
+These fields reproduce the immutable schema 6 `reviewer_assignment`; schema-2
+evidence identity must match this parent assignment and never promotes
+canonical state by itself.
+
 文档类型：Execution Report
 日志及版本：YYYY-MM-DD v1
 
@@ -94,7 +111,7 @@ Behavior claims and mechanisms：
 |---|---|
 | Contract marker count | <start/end count> |
 | Canonical status path | `docs/agent-collab/<change-id>/status.md` |
-| `schema_version` / `contract_revision` | `5` / `<n>` |
+| `schema_version` / `contract_revision` | `6` / `<n>` |
 | canonical SHA-256 | `<same value as Brief>` |
 | `change_id` | `<value>` |
 | `risk_profile` | compact / standard / strict |

@@ -1,20 +1,21 @@
 ## Handed-off External Execution
 
-Consume the router-owned schema-version-5 contract from
+Consume the router-owned schema-version-6 contract from
 `docs/agent-collab/<change-id>/status.md`. Do not re-decide mode, approval,
 risk, planned batches, profiles, authorization, or final verification commands.
 Missing, stale, duplicated, contradictory, or unparsable canonical state is
-`BLOCKED`. Active schema-4 contracts finish under schema 4 and are never silently
-migrated.
+`BLOCKED`. Active schema-4/schema-5 contracts drain under their old runtime
+before cutover and are never silently migrated or treated as current authority.
 
-The contract binds immutable control-plane, executor, and reviewer assignments
-by `agent_product`, contract-local `agent_instance_id`, `agent_role`, and
-`capability_profile`, plus decision provenance and a Confirmation Lease. The
-bound Codex control-plane instance remains the decision owner. Assigned Codex,
-Antigravity CLI, or Grok CLI instances may execute or independently Review, but
-their result is advisory evidence until identity/profile binding and required
-evidence pass. Standard/strict executor and reviewer instance IDs differ even
-when the products match.
+The contract binds immutable control-plane, executor, and reviewer assignments,
+including Review purpose, reviewer product, reviewer role, capability,
+independence, authority, contract-local instance, decision provenance, and a
+Confirmation Lease. `codex`, `pi`, `antigravity-cli`, and `grok-cli` are
+equally eligible for assigned executor or independent-reviewer roles. Their
+results remain governed evidence. Only the bound Codex product plus
+`control-plane` role, `control-plane-high` profile, matching instance, and
+canonical contract owns decisions. Standard/strict executor and reviewer
+instance IDs differ even when products match.
 
 ### Artifact Paths
 
@@ -90,8 +91,10 @@ invalidate that final evidence.
 Every external profile has at least one non-blank `step_critical` and
 `final_critical`. Status references the attempt Report and Review by safe
 project-relative path plus SHA-256. New artifacts embed a schema-2 manifest
-binding product, instance, role, profile, result, change, batch, attempt, and
-source canonical revision/SHA-256. Historical schema-4/schema-1 evidence remains
-immutable. Review records
+whose `agent_product`, `agent_instance_id`, `agent_role`, and
+`capability_profile` match the parent schema-6 assignment and which also binds
+result, change, batch, attempt, and source canonical revision/SHA-256.
+Historical schema-4/schema-5 contracts and their evidence remain immutable.
+Review records
 from/to revision and canonical SHA-256 transition evidence; `complete` runtime
 validation requires the actual previous status.

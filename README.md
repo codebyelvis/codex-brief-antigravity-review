@@ -10,6 +10,9 @@ It is intended for workflows where Codex should design, dispatch, and audit work
 
 - Writes or refines standalone task prompts, briefs, and checklists without requiring OpenSpec or Handoff state.
 - Standalone Review requires an explicit user request, is request-scoped and findings-first, and is never auto-chained after change generation.
+- Every standalone Review request or recommendation states a non-blank purpose,
+  one concrete reviewer product, role, capability profile, independence, and
+  evidence-only result authority.
 - Reviews ordinary diffs and evidence read-only without pretending to promote a governed batch.
 - Converts approved implementation plans into attempt-specific batch briefs.
 - Separates orchestration and review from implementation execution.
@@ -19,8 +22,13 @@ It is intended for workflows where Codex should design, dispatch, and audit work
 - Preserves `FAIL`/`BLOCKED` attempt history and requires correction or recovery followed by another Review.
 - Uses canonical `status.md` for shared state and returns final batch `PASS` to the change gate for final verification.
 - Runs a current-revision Brief Preflight Review before dispatch.
-- Uses schema-5 Handoff state and schema-2 evidence with product, instance,
-  role, profile, provenance, Lease, and SHA-256 binding.
+- Uses current schema-6 Handoff state and schema-2 evidence to bind the complete
+  immutable Reviewer Assignment; frozen schema 4/5 is available only through a
+  read-only non-authorizing legacy audit.
+- Treats Codex, Pi, Antigravity CLI, and Grok CLI as equally eligible for
+  assigned executor/reviewer roles. Product names grant no authority; only the
+  bound Codex `control-plane` / `control-plane-high` instance and contract may
+  accept evidence or advance canonical state.
 - Governs manually copied state-changing standard/strict Briefs through the same
   route and rejects same-instance self-review even for one product.
 - Requires High Review of actual diffs, production wiring, claims/mechanisms,
@@ -44,8 +52,8 @@ This skill creates a strict Brief -> Dispatch -> Report -> Review loop.
 | Role | Responsibility |
 |---|---|
 | Codex standalone | Writes prompts/briefs/checklists or performs read-only diff/evidence review; no Handoff state or batch promotion. |
-| Codex governor | Reads the approved plan, writes attempt briefs, dispatches the external agent, audits reports, reruns critical evidence, and writes PASS / FAIL / BLOCKED reviews. |
-| External agent | Implements only the allowed scope, obeys forbidden files and abort rules, runs required checks, and writes a report. |
+| Bound Codex control plane | Reads the approved plan, assigns roles, writes attempt briefs, audits governed evidence, and exclusively decides canonical transitions. |
+| Assigned executor/reviewer | Any of Codex, Pi, Antigravity CLI, or Grok CLI may fill the explicitly assigned role, obey its instance/independence boundary, and return evidence only. |
 | Handoff Contract | Canonical `status.md` state for batch, attempt, lifecycle, blocker recovery, evidence, and final handback. |
 | openspec-superpower-change | Owns request routing, OpenSpec approval status, risk profile, and implementation authorization before this skill takes over. |
 
@@ -167,10 +175,13 @@ approval and never converts batch PASS into whole-task completion.
 - Only `PASS` may advance the batch pointer or authorize the next brief.
 - Every external profile requires non-blank step/final critical commands.
 - Report and Review evidence must be project-relative, non-empty, SHA-256
-  matched, and carry the schema-1 role/result/change/batch/attempt/source
-  fingerprint manifest plus the producing agent identity and role.
+  matched, and carry the schema-2 role/result/change/batch/attempt/source
+  fingerprint manifest plus the assigned product, instance, role, and
+  capability profile.
 - Portable changes to this Skill are incomplete until every declared required
-  Codex/Antigravity/Grok runtime passes the shared cross-CLI sync gate.
+  Codex/Pi/Antigravity/Grok runtime passes the shared cross-CLI sync gate. Pi
+  uses `${PI_CODING_AGENT_DIR}/skills` and the managed global rule at
+  `${PI_CODING_AGENT_DIR}/APPEND_SYSTEM.md`.
 
 ## Installation
 
@@ -191,11 +202,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 /path/to/codex-brief-antigravity-review/script
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s /path/to/codex-brief-antigravity-review/tests -v
 ```
 
-Runtime status validation additionally accepts `--status <status.md>` with
-`--artifact-root <project-root>` to verify referenced evidence files.
-Transitions that introduce evidence should add `--previous-status <canonical-status>`;
-`complete` requires it. Keep proposed/previous snapshots outside the project so
-there is still exactly one canonical Handoff marker block.
+Current governed status uses schema 6. Runtime validation accepts
+`--status <status.md>` with `--artifact-root <project-root>` to verify its
+schema-2 evidence manifests. Transitions that introduce evidence should add
+`--previous-status <canonical-status>`; `complete` requires it. Keep
+proposed/previous snapshots outside the project so there is still exactly one
+canonical Handoff marker block.
+
+Frozen schema-4/schema-5 records are legacy audit/drain inputs only. Inventory
+them separately with `--legacy-inventory-root` and
+`--legacy-inventory-output`; never pass them to current `--status` validation
+or migrate them into schema 6.
 
 `quick_validate.py` requires PyYAML; set `PYTHON_BIN` accordingly. The project validator and tests exercise the dependency-free fallback.
 

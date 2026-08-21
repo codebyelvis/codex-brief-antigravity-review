@@ -8,6 +8,8 @@
 
 - 独立编写或优化 task prompt、Brief、checklist，无需 OpenSpec/Handoff。
 - Standalone Review 必须由用户明确请求、仅作用于当前请求、采用 findings-first 输出，且生成变更后绝不自动串联触发。
+- 每次 standalone Review 请求或推荐都必须说明非空 purpose、一个具体 reviewer
+  产品、角色、能力 profile、独立性与仅证据性质的结果权限。
 - 普通 diff/证据只读 Review 不伪造批次推进。
 - 将已批准实施计划转化为带 attempt 的批次 Brief。
 - 将编排与评审从具体实现执行中分离。
@@ -17,8 +19,11 @@
 - `FAIL`/`BLOCKED` 保留 attempt 历史，修正/解阻后必须再 Review。
 - 只以 canonical `status.md` 保存共享状态，最终批次 PASS 回交总入口验证。
 - Dispatch 前对当前 revision 的 Brief 执行 Preflight Review。
-- schema 5 / schema 2 证据绑定产品、实例、角色、profile、决策来源、Lease
-  与 SHA-256；同产品也禁止同实例自审。
+- 当前 schema 6 / schema 2 证据绑定完整且不可变的 Reviewer Assignment；冻结的
+  schema 4/5 只能通过只读、非授权 legacy audit 使用。
+- Codex、Pi、Antigravity CLI 与 Grok CLI 在被指派的 executor/reviewer 角色上
+  资格同等。产品名本身不授予权限；只有绑定的 Codex `control-plane` /
+  `control-plane-high` 实例及合同可以接受证据或推进 canonical state。
 - 手工复制的 state-changing standard/strict Brief 仍走 canonical Handoff；
   High Review 必须检查真实 diff、生产 wiring、机制证据和独立探针。
 
@@ -40,8 +45,8 @@
 | 角色 | 职责 |
 |---|---|
 | Codex standalone | 编写 prompt/Brief/checklist 或只读 Review diff/证据；不维护 Handoff 或推进批次。 |
-| Codex governor | 读取已批准计划，编写 attempt Brief，派发外部 Agent，审计 Report，复跑关键证据并写 Review。 |
-| 外部 Agent | 只实现允许范围，遵守禁止文件与 abort 规则，运行要求的检查，并写出 Report。 |
+| 绑定的 Codex control plane | 读取已批准计划、指派角色、编写 attempt Brief、审计 governed evidence，并独占 canonical transition 决策。 |
+| 被指派的 executor/reviewer | Codex、Pi、Antigravity CLI 或 Grok CLI 均可承担明确指派的角色，遵守实例/独立性边界，并且只返回证据。 |
 | Handoff Contract | 只在 canonical `status.md` 保存 batch、attempt、lifecycle、阻塞恢复和最终回交状态。 |
 | openspec-superpower-change | 在本 Skill 接手前，负责请求路由、OpenSpec 审批状态、风险等级和实施授权。 |
 
@@ -157,7 +162,11 @@ batch/attempt、owner 和当前 lifecycle 时使用。本 Skill 随后才可对�
 - 只有 `PASS` 才能推进批次指针或授权下一份 Brief。
 - 每个外部 evidence profile 都必须有非空 step/final critical 命令。
 - Report/Review 证据必须是项目相对路径、非空文件、SHA-256 匹配，并内嵌
-  schema 1 role/result/change/batch/attempt/source fingerprint manifest。
+  schema-2 role/result/change/batch/attempt/source fingerprint manifest，以及
+  被分配的 product、instance、role 和 capability profile。
+- 便携变更只有在 Codex/Pi/Antigravity/Grok 四个必需 runtime 都通过共享同步门后
+  才完整；Pi 使用 `${PI_CODING_AGENT_DIR}/skills`，managed global rule 位于
+  `${PI_CODING_AGENT_DIR}/APPEND_SYSTEM.md`。
 
 ## 安装
 
@@ -178,11 +187,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 /path/to/codex-brief-antigravity-review/script
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s /path/to/codex-brief-antigravity-review/tests -v
 ```
 
-运行时状态还可使用 `--status <status.md>` 和
-`--artifact-root <project-root>` 验证引用证据文件。
-引入证据的 transition 应增加 `--previous-status <canonical-status>`；
-`complete` 强制要求。proposed/previous 快照必须留在项目外，确保项目中仍
-只有一个 canonical Handoff marker block。
+当前受治理状态使用 schema 6。运行时可使用 `--status <status.md>` 和
+`--artifact-root <project-root>` 验证其 schema-2 evidence manifest。引入证据
+的 transition 应增加 `--previous-status <canonical-status>`；`complete` 强制
+要求。proposed/previous 快照必须留在项目外，确保项目中仍只有一个
+canonical Handoff marker block。
+
+冻结的 schema-4/schema-5 记录只能作为 legacy audit/drain 输入。必须通过
+`--legacy-inventory-root` 与 `--legacy-inventory-output` 单独盘点，不得交给
+当前 `--status` 校验，也不得迁移成 schema 6。
 
 `quick_validate.py` 需要 PyYAML；请通过 `PYTHON_BIN` 选择可用解释器。项目 validator 和测试会覆盖无 PyYAML fallback。
 

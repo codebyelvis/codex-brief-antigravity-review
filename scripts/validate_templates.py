@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -20,14 +22,17 @@ EVIDENCE_START = "<!-- COOP_EVIDENCE_MANIFEST_START -->"
 EVIDENCE_END = "<!-- COOP_EVIDENCE_MANIFEST_END -->"
 LEASE_START = "<!-- COOP_CONFIRMATION_LEASE_START -->"
 LEASE_END = "<!-- COOP_CONFIRMATION_LEASE_END -->"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+SCHEMA5_VERSION = 5
 LEGACY_SCHEMA_VERSION = 4
 EVIDENCE_SCHEMA_VERSION = 2
 LEGACY_EVIDENCE_SCHEMA_VERSION = 1
-AGENT_IDENTITIES = {"codex", "antigravity-cli", "grok-cli"}
-AUXILIARY_AGENT_IDENTITIES = {"antigravity-cli", "grok-cli"}
-REVIEWER_IDENTITIES = AGENT_IDENTITIES | {"not-applicable"}
+SCHEMA6_AGENT_PRODUCTS = {"codex", "pi", "antigravity-cli", "grok-cli"}
+SCHEMA5_AGENT_PRODUCTS = {"codex", "antigravity-cli", "grok-cli"}
+SCHEMA4_EXECUTOR_PRODUCTS = {"antigravity-cli", "grok-cli"}
+SCHEMA4_REVIEWER_PRODUCTS = SCHEMA5_AGENT_PRODUCTS | {"not-applicable"}
 AGENT_ROLES = {"executor", "independent-reviewer", "decision-owner"}
+SCHEMA6_AGENT_ROLES = {"control-plane", "executor", "independent-reviewer"}
 SCHEMA5_AGENT_ROLES = {"control-plane", "executor", "independent-reviewer"}
 CAPABILITY_PROFILES = {"control-plane-high", "cohesive-medium", "mechanical-low"}
 DECISION_SOURCES = {
@@ -88,7 +93,7 @@ LEGACY_IMMUTABLE_FIELDS = {
     "step_critical", "final_critical", "business_acceptance",
     "stop_conditions", "verification_strategy", "readonly_fields",
 }
-IMMUTABLE_FIELDS = {
+SCHEMA5_IMMUTABLE_FIELDS = {
     "schema_version", "change_id", "mode", "approval_status", "risk_profile",
     "batch_profile", "planned_batches", "executor", "governor",
     "control_plane_owner", "executor_assignment",
@@ -98,6 +103,13 @@ IMMUTABLE_FIELDS = {
     "business_acceptance", "stop_conditions", "verification_strategy",
     "readonly_fields",
 }
+SCHEMA6_IMMUTABLE_FIELDS = (
+    SCHEMA5_IMMUTABLE_FIELDS
+    - {"independent_reviewer_assignment"}
+    | {"reviewer_assignment"}
+)
+# Current-schema compatibility alias for callers that inspect immutable fields.
+IMMUTABLE_FIELDS = SCHEMA6_IMMUTABLE_FIELDS
 ARTIFACT_FIELDS = (
     "attempt_report_artifact", "last_review_artifact",
     "final_verification_artifact", "final_review_artifact",
@@ -149,33 +161,53 @@ def parse_scalar(value: str):
 
 
 def simple_yaml_load(text: str) -> dict:
-    result: dict = {}
-    current_key: str | None = None
-    for raw in text.splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        indent = len(raw) - len(raw.lstrip(" "))
-        line = raw.strip()
-        if indent == 0 and not line.startswith("- "):
-            if ":" not in line:
+    lines = [
+        (len(raw) - len(raw.lstrip(" ")), raw.strip())
+        for raw in text.splitlines()
+        if raw.strip() and not raw.lstrip().startswith("#")
+    ]
+    if not lines:
+        return {}
+
+    def parse_block(index: int, indent: int):
+        is_list = lines[index][1].startswith("- ")
+        container = [] if is_list else {}
+        while index < len(lines):
+            line_indent, line = lines[index]
+            if line_indent < indent:
+                break
+            if line_indent > indent:
+                raise AssertionError("fallback YAML has unexpected indentation")
+            if is_list:
+                if not line.startswith("- "):
+                    raise AssertionError("fallback YAML mixes list and mapping entries")
+                item = line[2:].strip()
+                if not item:
+                    raise AssertionError("fallback YAML does not allow empty list items")
+                container.append(parse_scalar(item))
+                index += 1
                 continue
-            key, value = line.split(":", 1)
+            if line.startswith("- ") or ":" not in line:
+                raise AssertionError("fallback YAML mapping entry is invalid")
+            key, raw_value = line.split(":", 1)
             key = key.strip()
-            if value.strip():
-                result[key] = parse_scalar(value)
-                current_key = None
+            if not key or key in container:
+                raise AssertionError("fallback YAML has an empty or duplicate key")
+            raw_value = raw_value.strip()
+            index += 1
+            if raw_value:
+                container[key] = parse_scalar(raw_value)
+                continue
+            if index < len(lines) and lines[index][0] > indent:
+                child_indent = lines[index][0]
+                container[key], index = parse_block(index, child_indent)
             else:
-                result[key] = {}
-                current_key = key
-        elif indent == 2 and current_key and line.startswith("- "):
-            if not isinstance(result[current_key], list):
-                result[current_key] = []
-            result[current_key].append(parse_scalar(line[2:]))
-        elif indent == 2 and current_key and ":" in line:
-            if not isinstance(result[current_key], dict):
-                result[current_key] = {}
-            key, value = line.split(":", 1)
-            result[current_key][key.strip()] = parse_scalar(value)
+                container[key] = {}
+        return container, index
+
+    result, consumed = parse_block(0, lines[0][0])
+    if consumed != len(lines) or not isinstance(result, dict):
+        raise AssertionError("fallback YAML root must be one complete mapping")
     return result
 
 
@@ -352,9 +384,9 @@ def _validate_schema4_handoff_contract(data: dict, label: str) -> None:
         raise AssertionError(f"{label}: change_id must be a path-safe kebab-case slug")
     if data["executor"] != "external-agent" or data["governor"] != "codex-brief-antigravity-review":
         raise AssertionError(f"{label}: execution contract requires external-agent executor and brief governor")
-    if data["executor_agent"] not in AUXILIARY_AGENT_IDENTITIES:
+    if data["executor_agent"] not in SCHEMA4_EXECUTOR_PRODUCTS:
         raise AssertionError(f"{label}: invalid executor agent identity")
-    if data["independent_reviewer_agent"] not in REVIEWER_IDENTITIES:
+    if data["independent_reviewer_agent"] not in SCHEMA4_REVIEWER_PRODUCTS:
         raise AssertionError(f"{label}: invalid independent reviewer agent identity")
     if data["decision_owner"] != "codex":
         raise AssertionError(f"{label}: decision_owner must be codex")
@@ -594,11 +626,18 @@ def validate_high_review_evidence(evidence: dict) -> None:
             raise AssertionError("High Review claim-to-mechanism support is required")
 
 
-def _validate_assignment(value, field: str, expected_role: str, allowed_profiles: set[str], label: str):
+def _validate_assignment(
+    value,
+    field: str,
+    expected_role: str,
+    allowed_profiles: set[str],
+    allowed_products: set[str],
+    label: str,
+) -> None:
     required = {"agent_product", "agent_instance_id", "agent_role", "capability_profile"}
     if not isinstance(value, dict) or set(value) != required:
         raise AssertionError(f"{label}: {field} must contain exactly product/instance/role/profile")
-    if value["agent_product"] not in AGENT_IDENTITIES:
+    if value["agent_product"] not in allowed_products:
         raise AssertionError(f"{label}: {field} has invalid agent_product")
     if not isinstance(value["agent_instance_id"], str) or not re.fullmatch(
         r"[a-z0-9][a-z0-9._-]{2,63}", value["agent_instance_id"]
@@ -610,6 +649,100 @@ def _validate_assignment(value, field: str, expected_role: str, allowed_profiles
         raise AssertionError(f"{label}: {field} has invalid capability_profile")
 
 
+REVIEW_PURPOSE_FIELDS = {"object", "decision"}
+INDEPENDENCE_FIELDS = {"kind", "distinct_from"}
+REVIEWER_ASSIGNMENT_FIELDS = {
+    "review_purpose", "agent_product", "agent_instance_id", "agent_role",
+    "capability_profile", "independence_requirement", "result_authority",
+}
+
+
+def _validate_review_purpose(value, label: str) -> None:
+    if not isinstance(value, dict) or set(value) != REVIEW_PURPOSE_FIELDS:
+        raise AssertionError(f"{label}: review_purpose must contain exactly object/decision")
+    if not all(_is_nonblank(value[key]) for key in REVIEW_PURPOSE_FIELDS):
+        raise AssertionError(f"{label}: review_purpose values must be non-blank")
+
+
+def _validate_independence(value, expected: set[str], label: str) -> None:
+    if not isinstance(value, dict) or set(value) != INDEPENDENCE_FIELDS:
+        raise AssertionError(f"{label}: independence_requirement fields are invalid")
+    if value["kind"] != "distinct-contract-instance":
+        raise AssertionError(f"{label}: independence kind is invalid")
+    distinct_from = value["distinct_from"]
+    if (
+        not isinstance(distinct_from, list)
+        or not all(isinstance(item, str) for item in distinct_from)
+        or len(distinct_from) != len(set(distinct_from))
+        or set(distinct_from) != expected
+    ):
+        raise AssertionError(f"{label}: independence targets are invalid")
+
+
+def _validate_schema6_reviewer_assignment(data: dict, label: str) -> None:
+    reviewer = data["reviewer_assignment"]
+    if not isinstance(reviewer, dict) or set(reviewer) != REVIEWER_ASSIGNMENT_FIELDS:
+        raise AssertionError(
+            f"{label}: reviewer_assignment must contain exactly the governed seven fields"
+        )
+    _validate_review_purpose(reviewer["review_purpose"], label)
+    if reviewer["result_authority"] != "governed-review-evidence":
+        raise AssertionError(f"{label}: reviewer_assignment result_authority is invalid")
+
+    owner = data["control_plane_owner"]
+    executor = data["executor_assignment"]
+    reason = data["independent_review_not_applicable_reason"]
+    identity_fields = {
+        "agent_product", "agent_instance_id", "agent_role", "capability_profile"
+    }
+    reviewer_identity = {key: reviewer[key] for key in identity_fields}
+    if data["risk_profile"] in {"standard", "strict"}:
+        _validate_assignment(
+            reviewer_identity,
+            "reviewer_assignment",
+            "independent-reviewer",
+            {"control-plane-high"},
+            SCHEMA6_AGENT_PRODUCTS,
+            label,
+        )
+        _validate_independence(
+            reviewer["independence_requirement"],
+            {"control_plane_owner", "executor_assignment"},
+            label,
+        )
+        if reason is not None:
+            raise AssertionError(f"{label}: standard/strict reviewer reason must be null")
+        instance_ids = {
+            owner["agent_instance_id"],
+            executor["agent_instance_id"],
+            reviewer["agent_instance_id"],
+        }
+        if len(instance_ids) != 3:
+            raise AssertionError(
+                f"{label}: control-plane, executor, and reviewer instance IDs must differ"
+            )
+    else:
+        _validate_assignment(
+            reviewer_identity,
+            "reviewer_assignment",
+            owner["agent_role"],
+            {owner["capability_profile"]},
+            SCHEMA6_AGENT_PRODUCTS,
+            label,
+        )
+        _validate_independence(
+            reviewer["independence_requirement"], {"executor_assignment"}, label
+        )
+        if any(reviewer[key] != owner[key] for key in identity_fields):
+            raise AssertionError(
+                f"{label}: compact reviewer identity must equal the control-plane owner"
+            )
+        if reviewer["agent_instance_id"] == executor["agent_instance_id"]:
+            raise AssertionError(f"{label}: compact executor instance must be distinct")
+        if not _is_nonblank(reason):
+            raise AssertionError(f"{label}: compact reviewer requires a non-blank reason")
+
+
 def _validate_confirmation_lease_ref(value, label: str) -> None:
     if not isinstance(value, dict) or set(value) != {"decision_id", "path", "sha256"}:
         raise AssertionError(f"{label}: confirmation_lease must be a decision-id/path/sha256 mapping")
@@ -619,6 +752,8 @@ def _validate_confirmation_lease_ref(value, label: str) -> None:
 
 
 def _validate_schema5_handoff_contract(data: dict, label: str) -> None:
+    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA5_VERSION:
+        raise AssertionError(f"{label}: legacy schema_version must be {SCHEMA5_VERSION}")
     required = {
         "schema_version", "change_id", "mode", "approval_status",
         "risk_profile", "batch_profile", "current_batch", "planned_batches",
@@ -661,11 +796,13 @@ def _validate_schema5_handoff_contract(data: dict, label: str) -> None:
     _validate_schema4_handoff_contract(legacy, label)
     _validate_assignment(
         data["control_plane_owner"], "control_plane_owner", "control-plane",
-        {"control-plane-high"}, label,
+        {"control-plane-high"}, SCHEMA5_AGENT_PRODUCTS, label,
     )
+    if data["control_plane_owner"]["agent_product"] != "codex":
+        raise AssertionError(f"{label}: schema-5 control_plane_owner must use Codex")
     _validate_assignment(
         data["executor_assignment"], "executor_assignment", "executor",
-        CAPABILITY_PROFILES, label,
+        CAPABILITY_PROFILES, SCHEMA5_AGENT_PRODUCTS, label,
     )
     reviewer = data["independent_reviewer_assignment"]
     if reviewer is None:
@@ -674,7 +811,7 @@ def _validate_schema5_handoff_contract(data: dict, label: str) -> None:
     else:
         _validate_assignment(
             reviewer, "independent_reviewer_assignment", "independent-reviewer",
-            {"control-plane-high"}, label,
+            {"control-plane-high"}, SCHEMA5_AGENT_PRODUCTS, label,
         )
         if data["independent_review_not_applicable_reason"] is not None:
             raise AssertionError(f"{label}: reviewer reason must be null when a reviewer is assigned")
@@ -693,22 +830,107 @@ def _validate_schema5_handoff_contract(data: dict, label: str) -> None:
     if data["confirmation_lease_status"] != "valid" and data["lifecycle_state"] != "blocked":
         raise AssertionError(f"{label}: deferred/revoked Lease requires blocked lifecycle")
     readonly = data["readonly_fields"]
-    if not isinstance(readonly, list) or len(readonly) != len(set(readonly)) or set(readonly) != IMMUTABLE_FIELDS:
+    if not isinstance(readonly, list) or len(readonly) != len(set(readonly)) or set(readonly) != SCHEMA5_IMMUTABLE_FIELDS:
         raise AssertionError(f"{label}: readonly_fields must exactly match schema-5 immutable fields")
 
 
+def _validate_schema6_handoff_contract(data: dict, label: str) -> None:
+    schema5_required = {
+        "schema_version", "change_id", "mode", "approval_status",
+        "risk_profile", "batch_profile", "current_batch", "planned_batches",
+        "attempt", "contract_revision", "lifecycle_state",
+        "attempt_report_artifact", "last_review_result", "last_review_artifact",
+        "blocked_reason", "blocker_owner", "resume_condition",
+        "final_verification", "final_verification_artifact",
+        "final_review_result", "final_review_artifact", "executor", "governor",
+        "control_plane_owner", "executor_assignment", "independent_reviewer_assignment",
+        "independent_review_not_applicable_reason", "decision_source",
+        "confirmation_lease", "confirmation_lease_status", "next_owner",
+        "step_critical", "final_critical", "business_acceptance",
+        "stop_conditions", "verification_strategy", "readonly_fields",
+    }
+    required = (
+        schema5_required - {"independent_reviewer_assignment"} | {"reviewer_assignment"}
+    )
+    missing = sorted(required - set(data))
+    unexpected = sorted(set(data) - required)
+    if missing:
+        raise AssertionError(f"{label}: missing contract fields: {missing}")
+    if unexpected:
+        raise AssertionError(f"{label}: unexpected contract fields: {unexpected}")
+
+    common = dict(data)
+    common.update({
+        "schema_version": LEGACY_SCHEMA_VERSION,
+        "executor_agent": "antigravity-cli",
+        "independent_reviewer_agent": (
+            "not-applicable" if data["risk_profile"] == "compact" else "grok-cli"
+        ),
+        "decision_owner": "codex",
+    })
+    for key in (
+        "control_plane_owner", "executor_assignment", "reviewer_assignment",
+        "decision_source", "confirmation_lease", "confirmation_lease_status",
+    ):
+        common.pop(key, None)
+    common["readonly_fields"] = list(LEGACY_IMMUTABLE_FIELDS)
+    _validate_schema4_handoff_contract(common, label)
+
+    _validate_assignment(
+        data["control_plane_owner"],
+        "control_plane_owner",
+        "control-plane",
+        {"control-plane-high"},
+        SCHEMA6_AGENT_PRODUCTS,
+        label,
+    )
+    if data["control_plane_owner"]["agent_product"] != "codex":
+        raise AssertionError(f"{label}: current control_plane_owner must use Codex")
+    _validate_assignment(
+        data["executor_assignment"],
+        "executor_assignment",
+        "executor",
+        CAPABILITY_PROFILES,
+        SCHEMA6_AGENT_PRODUCTS,
+        label,
+    )
+    _validate_schema6_reviewer_assignment(data, label)
+    validate_decision_source(data["decision_source"])
+    _validate_confirmation_lease_ref(data["confirmation_lease"], label)
+    if data["confirmation_lease_status"] not in {"valid", "deferred", "revoked"}:
+        raise AssertionError(f"{label}: invalid confirmation_lease_status")
+    if (
+        data["confirmation_lease_status"] != "valid"
+        and data["lifecycle_state"] != "blocked"
+    ):
+        raise AssertionError(f"{label}: deferred/revoked Lease requires blocked lifecycle")
+    readonly = data["readonly_fields"]
+    if (
+        not isinstance(readonly, list)
+        or len(readonly) != len(set(readonly))
+        or set(readonly) != SCHEMA6_IMMUTABLE_FIELDS
+    ):
+        raise AssertionError(
+            f"{label}: readonly_fields must exactly match schema-6 immutable fields"
+        )
+
+
 def validate_handoff_contract(data: dict, label: str) -> None:
-    if not isinstance(data, dict):
-        raise AssertionError(f"{label}: handoff contract must be a mapping")
-    schema_version = data.get("schema_version")
+    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+        raise AssertionError(
+            f"{label}: current Handoff schema_version must be {SCHEMA_VERSION}"
+        )
+    _validate_schema6_handoff_contract(data, label)
+
+
+def validate_legacy_handoff_contract(data: dict, label: str) -> None:
+    schema_version = data.get("schema_version") if isinstance(data, dict) else None
     if schema_version == LEGACY_SCHEMA_VERSION:
         _validate_schema4_handoff_contract(data, label)
-    elif schema_version == SCHEMA_VERSION:
+    elif schema_version == SCHEMA5_VERSION:
         _validate_schema5_handoff_contract(data, label)
     else:
-        raise AssertionError(
-            f"{label}: schema_version must be {LEGACY_SCHEMA_VERSION} or {SCHEMA_VERSION}"
-        )
+        raise AssertionError(f"{label}: legacy schema must be 4 or 5")
 
 
 def _transition_artifact_field(before: dict, after: dict) -> str | None:
@@ -747,9 +969,9 @@ def _resolve_hashed_artifact(ref: dict, root: Path, key: str, label: str) -> tup
     return target, target.read_text(encoding="utf-8")
 
 
-def validate_confirmation_lease_artifact(data: dict, artifact_root: Path, label: str) -> None:
-    if data.get("schema_version") != SCHEMA_VERSION:
-        return
+def _validate_confirmation_lease_artifact(
+    data: dict, artifact_root: Path, label: str
+) -> None:
     root = artifact_root.resolve()
     if not root.is_dir():
         raise AssertionError(f"{label}: artifact root is not a directory: {root}")
@@ -782,6 +1004,21 @@ def validate_confirmation_lease_artifact(data: dict, artifact_root: Path, label:
         raise AssertionError(f"{label}: Confirmation Lease risk_profile does not match canonical status")
 
 
+def validate_confirmation_lease_artifact(
+    data: dict, artifact_root: Path, label: str
+) -> None:
+    validate_handoff_contract(data, f"{label}:current-parent")
+    _validate_confirmation_lease_artifact(data, artifact_root, label)
+
+
+def _validate_legacy_confirmation_lease_artifact(
+    data: dict, artifact_root: Path, label: str
+) -> None:
+    validate_legacy_handoff_contract(data, f"{label}:legacy-parent")
+    if data["schema_version"] == SCHEMA5_VERSION:
+        _validate_confirmation_lease_artifact(data, artifact_root, label)
+
+
 def validate_high_review_artifact_text(text: str, label: str) -> None:
     lowered = text.lower()
     groups = (
@@ -799,42 +1036,99 @@ def validate_high_review_artifact_text(text: str, label: str) -> None:
             )
 
 
-def inventory_active_schema4_statuses(roots: list[Path]) -> list[Path]:
-    active: list[Path] = []
+def inventory_legacy_handoffs(roots: list[Path]) -> list[dict]:
+    records: list[dict] = []
     seen: set[Path] = set()
     for raw_root in roots:
         root = Path(raw_root).resolve()
-        if not root.exists():
-            raise AssertionError(f"schema-4 inventory root does not exist: {root}")
+        if not root.is_dir():
+            raise AssertionError(f"legacy inventory root is not a directory: {root}")
         for status in root.rglob("status.md"):
+            if status.is_symlink():
+                raise AssertionError(f"legacy inventory status may not be a symlink: {status}")
             resolved = status.resolve()
-            parts = resolved.parts
-            if resolved in seen or not any(
-                parts[index:index + 2] == ("docs", "agent-collab")
-                for index in range(max(0, len(parts) - 1))
-            ):
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise AssertionError(
+                    f"legacy inventory status resolves outside root: {status}"
+                ) from exc
+            if resolved in seen:
                 continue
             seen.add(resolved)
             text = read(resolved)
             if START not in text and END not in text:
                 continue
             data = extract_handoff_contract(text, str(resolved))
-            if data.get("schema_version") == LEGACY_SCHEMA_VERSION and data.get("lifecycle_state") != "complete":
-                active.append(resolved)
-    return sorted(active)
+            if data.get("schema_version") not in {
+                LEGACY_SCHEMA_VERSION, SCHEMA5_VERSION,
+            }:
+                continue
+            validate_legacy_handoff_contract(data, str(resolved))
+            lifecycle_state = data["lifecycle_state"]
+            records.append({
+                "path": str(resolved),
+                "schema_version": data["schema_version"],
+                "lifecycle_state": lifecycle_state,
+                "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+                "drain_status": (
+                    "complete-history" if lifecycle_state == "complete" else "active"
+                ),
+            })
+    return sorted(records, key=lambda record: record["path"])
 
 
-def validate_evidence_artifacts(
+def inventory_active_schema4_statuses(roots: list[Path]) -> list[Path]:
+    """Compatibility view for frozen schema-4 unit regressions only."""
+    return [
+        Path(record["path"])
+        for record in inventory_legacy_handoffs(roots)
+        if record["schema_version"] == LEGACY_SCHEMA_VERSION
+        and record["drain_status"] == "active"
+    ]
+
+
+def _write_exclusive_json(path: Path, payload: dict) -> None:
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(target, flags, 0o600)
+    try:
+        body = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        os.write(descriptor, body)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.chmod(target, 0o600)
+    directory_fd = os.open(target.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _validate_evidence_artifacts(
     data: dict,
     artifact_root: Path,
     label: str,
     previous: dict | None = None,
     previous_status_sha256: str | None = None,
+    *,
+    legacy_parent: bool = False,
 ) -> None:
+    if legacy_parent:
+        validate_legacy_handoff_contract(data, f"{label}:legacy-parent")
+    else:
+        validate_handoff_contract(data, f"{label}:current-parent")
     root = artifact_root.resolve()
     if not root.is_dir():
         raise AssertionError(f"{label}: artifact root is not a directory: {root}")
-    validate_confirmation_lease_artifact(data, root, label)
+    if legacy_parent:
+        _validate_legacy_confirmation_lease_artifact(data, root, label)
+    else:
+        validate_confirmation_lease_artifact(data, root, label)
     manifests: dict[str, dict] = {}
     for key in ARTIFACT_FIELDS:
         ref = data.get(key)
@@ -867,16 +1161,26 @@ def validate_evidence_artifacts(
         if manifest["evidence_result"] not in EVIDENCE_RESULTS:
             raise AssertionError(f"{label}: {key} has invalid evidence result")
         if data["schema_version"] == LEGACY_SCHEMA_VERSION:
-            if manifest["agent_identity"] not in AGENT_IDENTITIES:
+            if manifest["agent_identity"] not in SCHEMA5_AGENT_PRODUCTS:
                 raise AssertionError(f"{label}: {key} has invalid agent identity")
             if manifest["agent_role"] not in AGENT_ROLES:
                 raise AssertionError(f"{label}: {key} has invalid agent role")
         else:
-            if manifest["agent_product"] not in AGENT_IDENTITIES:
+            allowed_products = (
+                SCHEMA6_AGENT_PRODUCTS
+                if data["schema_version"] == SCHEMA_VERSION
+                else SCHEMA5_AGENT_PRODUCTS
+            )
+            if manifest["agent_product"] not in allowed_products:
                 raise AssertionError(f"{label}: {key} has invalid agent_product")
             if not _is_nonblank(manifest["agent_instance_id"]):
                 raise AssertionError(f"{label}: {key} has invalid agent_instance_id")
-            if manifest["agent_role"] not in SCHEMA5_AGENT_ROLES:
+            allowed_roles = (
+                SCHEMA6_AGENT_ROLES
+                if data["schema_version"] == SCHEMA_VERSION
+                else SCHEMA5_AGENT_ROLES
+            )
+            if manifest["agent_role"] not in allowed_roles:
                 raise AssertionError(f"{label}: {key} has invalid agent_role")
             if manifest["capability_profile"] not in CAPABILITY_PROFILES:
                 raise AssertionError(f"{label}: {key} has invalid capability_profile")
@@ -951,8 +1255,14 @@ def validate_evidence_artifacts(
         else:
             if evidence_role == "attempt-report":
                 assignment = data["executor_assignment"]
-            elif evidence_role == "batch-review" and data["independent_reviewer_assignment"] is not None:
-                assignment = data["independent_reviewer_assignment"]
+            elif evidence_role == "batch-review":
+                assignment = (
+                    data["reviewer_assignment"]
+                    if data["schema_version"] == SCHEMA_VERSION
+                    else data["independent_reviewer_assignment"]
+                )
+                if assignment is None:
+                    assignment = data["control_plane_owner"]
             else:
                 assignment = data["control_plane_owner"]
             expected_identity_role = (
@@ -1010,7 +1320,12 @@ def validate_evidence_artifacts(
     if previous is not None:
         if previous_status_sha256 is None or not re.fullmatch(r"[0-9a-f]{64}", previous_status_sha256):
             raise AssertionError(f"{label}: previous canonical status SHA-256 is required")
-        validate_transition(previous, data, f"{label}:previous-transition")
+        _validate_transition(
+            previous,
+            data,
+            f"{label}:previous-transition",
+            legacy_parent=legacy_parent,
+        )
         transition_key = _transition_artifact_field(previous, data)
         if transition_key is not None:
             manifest = manifests.get(transition_key)
@@ -1028,16 +1343,68 @@ def validate_evidence_artifacts(
         raise AssertionError(f"{label}: complete runtime validation requires previous canonical status")
 
 
-def validate_transition(before: dict, after: dict, label: str) -> None:
-    validate_handoff_contract(before, f"{label}:before")
-    validate_handoff_contract(after, f"{label}:after")
+def validate_evidence_artifacts(
+    data: dict,
+    artifact_root: Path,
+    label: str,
+    previous: dict | None = None,
+    previous_status_sha256: str | None = None,
+) -> None:
+    _validate_evidence_artifacts(
+        data,
+        artifact_root,
+        label,
+        previous,
+        previous_status_sha256,
+        legacy_parent=False,
+    )
+
+
+def _validate_legacy_evidence_artifacts(
+    data: dict,
+    artifact_root: Path,
+    label: str,
+    previous: dict | None = None,
+    previous_status_sha256: str | None = None,
+) -> None:
+    _validate_evidence_artifacts(
+        data,
+        artifact_root,
+        label,
+        previous,
+        previous_status_sha256,
+        legacy_parent=True,
+    )
+
+
+def _validate_transition(
+    before: dict,
+    after: dict,
+    label: str,
+    *,
+    legacy_parent: bool,
+) -> None:
+    contract_validator = (
+        validate_legacy_handoff_contract if legacy_parent else validate_handoff_contract
+    )
+    contract_validator(before, f"{label}:before")
+    if not isinstance(after, dict):
+        contract_validator(after, f"{label}:after")
     if before["schema_version"] != after["schema_version"]:
         raise AssertionError(f"{label}: schema version cannot change in place")
-    immutable_fields = (
-        LEGACY_IMMUTABLE_FIELDS
-        if before["schema_version"] == LEGACY_SCHEMA_VERSION else IMMUTABLE_FIELDS
-    )
-    if before["schema_version"] == SCHEMA_VERSION:
+    if legacy_parent:
+        immutable_fields = (
+            LEGACY_IMMUTABLE_FIELDS
+            if before["schema_version"] == LEGACY_SCHEMA_VERSION
+            else SCHEMA5_IMMUTABLE_FIELDS
+        )
+    else:
+        immutable_fields = SCHEMA6_IMMUTABLE_FIELDS
+    for key in immutable_fields:
+        if key not in after or before[key] != after[key]:
+            raise AssertionError(f"{label}: readonly field changed: {key}")
+    contract_validator(after, f"{label}:after")
+    if not legacy_parent or before["schema_version"] == SCHEMA5_VERSION:
         before_lease_status = before["confirmation_lease_status"]
         after_lease_status = after["confirmation_lease_status"]
         if before_lease_status in {"deferred", "revoked"} and after_lease_status != before_lease_status:
@@ -1051,9 +1418,6 @@ def validate_transition(before: dict, after: dict, label: str) -> None:
     next_state = after["lifecycle_state"]
     if current_state == "complete":
         raise AssertionError(f"{label}: complete is terminal")
-    for key in immutable_fields:
-        if before[key] != after[key]:
-            raise AssertionError(f"{label}: readonly field changed: {key}")
     if after["contract_revision"] != before["contract_revision"] + 1:
         raise AssertionError(f"{label}: contract_revision must increment by one")
     if next_state not in ALLOWED_TRANSITIONS[current_state]:
@@ -1178,6 +1542,14 @@ def validate_transition(before: dict, after: dict, label: str) -> None:
                 raise AssertionError(f"{label}: final Review cannot replace {key}")
 
 
+def validate_transition(before: dict, after: dict, label: str) -> None:
+    _validate_transition(before, after, label, legacy_parent=False)
+
+
+def _validate_legacy_transition(before: dict, after: dict, label: str) -> None:
+    _validate_transition(before, after, label, legacy_parent=True)
+
+
 def validate_frontmatter(skill: str) -> None:
     if not skill.startswith("---\n"):
         raise AssertionError("SKILL.md: missing YAML frontmatter")
@@ -1219,13 +1591,13 @@ def validate_companion_entry(skill: str) -> None:
 
 def validate_handoff_governor(governor: str) -> None:
     normalized_bytes = (governor.rstrip() + "\n").encode("utf-8")
-    expected_hash = "3d4d0b25a0312c6f21d682044af2296a5a9541c8a7bade2bb382b4fcc8b02bf7"
+    expected_hash = "0931999b997b93da601d443b5bdf7a3486f950ab47ef7d96c31c19a6911fc1fe"
     if hashlib.sha256(normalized_bytes).hexdigest() != expected_hash:
         raise AssertionError(
             "handed-off-external-execution.md: migrated governor content hash drift"
         )
     for needle in (
-        "schema-version-5", "schema-4", "Artifact Paths", "State Machine",
+        "schema-version-6", "schema-4/schema-5", "Artifact Paths", "State Machine",
         "Evidence Profiles", "agent_instance_id", "Preflight Review",
         "actual files and the complete diff", "claim-to-mechanism support",
         "independent adversarial", "awaiting-final-verification", "needs-fix",
@@ -1240,12 +1612,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--status", type=Path)
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--previous-status", type=Path)
-    parser.add_argument("--schema4-inventory-root", action="append", type=Path, default=[])
+    parser.add_argument("--legacy-inventory-root", action="append", type=Path, default=[])
+    parser.add_argument("--legacy-inventory-output", type=Path)
     args = parser.parse_args(argv[1:])
     if bool(args.status) != bool(args.artifact_root):
         parser.error("--status and --artifact-root must be provided together")
     if args.previous_status and not args.status:
         parser.error("--previous-status requires --status and --artifact-root")
+    if bool(args.legacy_inventory_root) != bool(args.legacy_inventory_output):
+        parser.error(
+            "--legacy-inventory-root and --legacy-inventory-output are required together"
+        )
     return args
 
 
@@ -1338,11 +1715,25 @@ def main(argv: list[str] | None = None) -> int:
         "COOP_EVIDENCE_MANIFEST_START", "evidence_role", "evidence_result",
         "current_batch", "attempt", "contract_revision", "canonical_sha256",
         "agent_product", "agent_instance_id", "agent_role", "capability_profile",
-        "control_plane_owner", "executor_assignment", "independent_reviewer_assignment",
+        "control_plane_owner", "executor_assignment", "reviewer_assignment",
         "decision_source", "confirmation_lease",
         "timeout-audit", "role-to-state binding", "result-to-status binding",
     ):
         require(handoff, needle, "handoff-contract.md")
+    if args.legacy_inventory_root:
+        records = inventory_legacy_handoffs(args.legacy_inventory_root)
+        active = [record for record in records if record["drain_status"] == "active"]
+        payload = {
+            "legacy_audit": "pass" if not active else "blocked",
+            "active_legacy_count": len(active),
+            "records": records,
+        }
+        _write_exclusive_json(args.legacy_inventory_output, payload)
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        if active:
+            raise AssertionError(
+                "active schema-4/schema-5 Handoff blocks schema-6 deployment"
+            )
     if args.status:
         status_path = args.status.resolve()
         status = extract_handoff_contract(read(status_path), str(args.status))

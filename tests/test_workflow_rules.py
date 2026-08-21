@@ -1,9 +1,11 @@
+import copy
 import importlib.util
 import hashlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -132,7 +134,7 @@ def schema4_contract(validator, handoff: str, **overrides) -> dict:
     data = validator.extract_handoff_contract(handoff, "handoff")
     for key in (
         "control_plane_owner", "executor_assignment",
-        "independent_reviewer_assignment", "decision_source",
+        "independent_reviewer_assignment", "reviewer_assignment", "decision_source",
         "confirmation_lease", "confirmation_lease_status",
     ):
         data.pop(key, None)
@@ -146,6 +148,216 @@ def schema4_contract(validator, handoff: str, **overrides) -> dict:
     data["readonly_fields"] = list(validator.LEGACY_IMMUTABLE_FIELDS)
     data.update(overrides)
     return data
+
+
+def standard_reviewer_assignment(product="codex", instance="codex-reviewer-02"):
+    return {
+        "review_purpose": {
+            "object": "current batch implementation, Report, contract, and evidence",
+            "decision": "decide pass, fail, or blocked for this governed Review gate",
+        },
+        "agent_product": product,
+        "agent_instance_id": instance,
+        "agent_role": "independent-reviewer",
+        "capability_profile": "control-plane-high",
+        "independence_requirement": {
+            "kind": "distinct-contract-instance",
+            "distinct_from": ["control_plane_owner", "executor_assignment"],
+        },
+        "result_authority": "governed-review-evidence",
+    }
+
+
+def assert_schema6_fixture(data: dict, *, compact: bool = False) -> None:
+    expected_assignment_fields = {
+        "review_purpose", "agent_product", "agent_instance_id", "agent_role",
+        "capability_profile", "independence_requirement", "result_authority",
+    }
+    if data.get("schema_version") != 6:
+        raise AssertionError("schema-6 fixture has the wrong discriminator")
+    if "independent_reviewer_assignment" in data:
+        raise AssertionError("schema-5 reviewer field leaked into schema-6 fixture")
+    if set(data.get("reviewer_assignment", {})) != expected_assignment_fields:
+        raise AssertionError("schema-6 reviewer assignment shape is invalid")
+    readonly = data.get("readonly_fields")
+    if (
+        not isinstance(readonly, list)
+        or len(readonly) != len(set(readonly))
+        or "reviewer_assignment" not in readonly
+        or "independent_reviewer_assignment" in readonly
+    ):
+        raise AssertionError("schema-6 readonly replacement is invalid")
+    if "independence_na_reason" in data:
+        raise AssertionError("undefined compact reason field leaked into fixture")
+    reason = data.get("independent_review_not_applicable_reason")
+    if compact:
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssertionError("compact fixture requires a nonblank NA reason")
+    elif reason is not None:
+        raise AssertionError("standard/strict fixture requires a null NA reason")
+
+
+def schema6_contract(validator, handoff: str, **overrides) -> dict:
+    data = validator.extract_handoff_contract(handoff, "handoff")
+    if data.get("schema_version") == 5:
+        old_assignment = data.pop("independent_reviewer_assignment")
+        if set(old_assignment) != {
+            "agent_product", "agent_instance_id", "agent_role", "capability_profile",
+        }:
+            raise AssertionError("unexpected frozen schema-5 reviewer shape")
+        data["schema_version"] = 6
+        data["reviewer_assignment"] = standard_reviewer_assignment(
+            product=old_assignment["agent_product"],
+            instance=old_assignment["agent_instance_id"],
+        )
+        data["readonly_fields"] = [
+            "reviewer_assignment" if item == "independent_reviewer_assignment" else item
+            for item in data["readonly_fields"]
+        ]
+    elif data.get("schema_version") != 6:
+        raise AssertionError("schema6 test fixture requires schema 5 or schema 6")
+    data.update(copy.deepcopy(overrides))
+    assert_schema6_fixture(data)
+    return data
+
+
+def schema5_contract(validator, handoff: str, **overrides) -> dict:
+    data = validator.extract_handoff_contract(handoff, "handoff")
+    if data.get("schema_version") == 6:
+        reviewer = data.pop("reviewer_assignment")
+        data["schema_version"] = 5
+        data["independent_reviewer_assignment"] = {
+            key: reviewer[key]
+            for key in (
+                "agent_product", "agent_instance_id", "agent_role",
+                "capability_profile",
+            )
+        }
+        data["readonly_fields"] = [
+            "independent_reviewer_assignment"
+            if item == "reviewer_assignment" else item
+            for item in data["readonly_fields"]
+        ]
+    elif data.get("schema_version") != 5:
+        raise AssertionError("schema5 fixture requires schema 5 or schema 6")
+    data.update(copy.deepcopy(overrides))
+    return data
+
+
+def render_handoff_contract(validator, data: dict) -> str:
+    def scalar(value) -> str:
+        if value is None:
+            return "null"
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return str(value)
+
+    def render(value, indent: int = 0) -> list[str]:
+        prefix = " " * indent
+        lines: list[str] = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{prefix}{key}:")
+                    lines.extend(render(item, indent + 2))
+                else:
+                    lines.append(f"{prefix}{key}: {scalar(item)}")
+            return lines
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    raise AssertionError("test YAML renderer accepts scalar lists only")
+                lines.append(f"{prefix}- {scalar(item)}")
+            return lines
+        raise AssertionError("test YAML renderer requires a mapping or list")
+
+    payload = "\n".join(render(data))
+    parsed = validator.simple_yaml_load(payload)
+    if parsed != data:
+        raise AssertionError("test YAML renderer did not round-trip the fixture")
+    return (
+        "<!-- COOP_HANDOFF_CONTRACT_START -->\n"
+        "```yaml\n"
+        f"{payload}\n"
+        "```\n"
+        "<!-- COOP_HANDOFF_CONTRACT_END -->\n"
+    )
+
+
+def compact_schema6_contract(validator, handoff: str, **overrides) -> dict:
+    data = schema6_contract(validator, handoff)
+    owner = data["control_plane_owner"]
+    data["risk_profile"] = "compact"
+    data["reviewer_assignment"] = {
+        "review_purpose": {
+            "object": "current compact implementation, evidence, and contract",
+            "decision": "decide pass, fail, or blocked for the compact Review gate",
+        },
+        "agent_product": owner["agent_product"],
+        "agent_instance_id": owner["agent_instance_id"],
+        "agent_role": owner["agent_role"],
+        "capability_profile": owner["capability_profile"],
+        "independence_requirement": {
+            "kind": "distinct-contract-instance",
+            "distinct_from": ["executor_assignment"],
+        },
+        "result_authority": "governed-review-evidence",
+    }
+    data["independent_review_not_applicable_reason"] = (
+        "compact inline Review is owned by the bound control-plane instance"
+    )
+    data.update(copy.deepcopy(overrides))
+    assert_schema6_fixture(data, compact=True)
+    return data
+
+
+def set_nested(mapping: dict, path: tuple[str, ...], value) -> None:
+    target = mapping
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+
+def schema2_assignment_evidence_manifest(
+    role: str,
+    result: str,
+    assignment: dict,
+    *,
+    change_id: str = "add-example-change",
+    current_batch: int = 1,
+    attempt: int = 1,
+    contract_revision: int = 2,
+    canonical_sha256: str = "b" * 64,
+) -> str:
+    text = (
+        "<!-- COOP_EVIDENCE_MANIFEST_START -->\n"
+        "```yaml\n"
+        "evidence_schema_version: 2\n"
+        f"evidence_role: {role}\n"
+        f"evidence_result: {result}\n"
+        f"change_id: {change_id}\n"
+        f"current_batch: {current_batch}\n"
+        f"attempt: {attempt}\n"
+        f"contract_revision: {contract_revision}\n"
+        f"canonical_sha256: {canonical_sha256}\n"
+        f"agent_product: {assignment['agent_product']}\n"
+        f"agent_instance_id: {assignment['agent_instance_id']}\n"
+        f"agent_role: {assignment['agent_role']}\n"
+        f"capability_profile: {assignment['capability_profile']}\n"
+        "```\n"
+        "<!-- COOP_EVIDENCE_MANIFEST_END -->\n"
+    )
+    if role in {"batch-review", "final-review"}:
+        text += (
+            "\nActual files and complete diff inspected\n"
+            "Copy/transform/production wiring trace\n"
+            "Critical reruns\n"
+            "Claim-to-mechanism support\n"
+            "Independent adversarial probe\n"
+        )
+    return text
 
 
 def load_validator():
@@ -231,10 +443,10 @@ class WorkflowRulesTest(unittest.TestCase):
         normalized_bytes = (governor.rstrip() + "\n").encode("utf-8")
         self.assertEqual(
             hashlib.sha256(normalized_bytes).hexdigest(),
-            "3d4d0b25a0312c6f21d682044af2296a5a9541c8a7bade2bb382b4fcc8b02bf7",
+            "0931999b997b93da601d443b5bdf7a3486f950ab47ef7d96c31c19a6911fc1fe",
         )
         for needle in (
-            "schema-version-5", "schema-4", "Artifact Paths", "State Machine",
+            "schema-version-6", "schema-4/schema-5", "Artifact Paths", "State Machine",
             "Evidence Profiles", "agent_instance_id", "Preflight Review",
             "actual files and the complete diff", "claim-to-mechanism support",
             "independent adversarial", "awaiting-final-verification", "needs-fix",
@@ -351,9 +563,9 @@ class WorkflowRulesTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "complete"):
             self.validator.validate_handoff_contract(data, "invalid-complete")
 
-    def test_handoff_schema_has_evidence_bound_v5_fields(self):
+    def test_handoff_schema_has_evidence_bound_v6_fields(self):
         for expected in (
-            "schema_version: 5",
+            "schema_version: 6",
             "attempt_report_artifact:",
             "last_review_artifact:",
             "final_verification_artifact:",
@@ -363,7 +575,7 @@ class WorkflowRulesTest(unittest.TestCase):
 
     def test_schema4_requires_bound_agent_identities_and_codex_decision_owner(self):
         data = schema4_contract(self.validator, self.handoff)
-        self.validator.validate_handoff_contract(data, "schema4-identities")
+        self.validator.validate_legacy_handoff_contract(data, "schema4-identities")
         self.assertEqual(self.validator.LEGACY_SCHEMA_VERSION, 4)
         for field in (
             "executor_agent", "independent_reviewer_agent", "decision_owner",
@@ -379,7 +591,7 @@ class WorkflowRulesTest(unittest.TestCase):
             invalid[field] = value
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(AssertionError, "agent|identity|decision_owner"):
-                    self.validator.validate_handoff_contract(invalid, "invalid-identity")
+                    self.validator.validate_legacy_handoff_contract(invalid, "invalid-identity")
 
     def test_standard_and_strict_require_a_distinct_reviewer(self):
         self.assertEqual(self.validator.LEGACY_SCHEMA_VERSION, 4)
@@ -390,7 +602,7 @@ class WorkflowRulesTest(unittest.TestCase):
             )
             with self.subTest(profile=profile, case="self-review"):
                 with self.assertRaisesRegex(AssertionError, "reviewer|distinct|self-review"):
-                    self.validator.validate_handoff_contract(same_agent, "self-review")
+                    self.validator.validate_legacy_handoff_contract(same_agent, "self-review")
 
             no_reviewer = schema4_contract(
                 self.validator, self.handoff, risk_profile=profile,
@@ -399,7 +611,7 @@ class WorkflowRulesTest(unittest.TestCase):
             )
             with self.subTest(profile=profile, case="not-applicable"):
                 with self.assertRaisesRegex(AssertionError, "reviewer|not-applicable|compact"):
-                    self.validator.validate_handoff_contract(no_reviewer, "missing-reviewer")
+                    self.validator.validate_legacy_handoff_contract(no_reviewer, "missing-reviewer")
 
     def test_compact_not_applicable_reviewer_requires_a_reason(self):
         valid = schema4_contract(
@@ -407,21 +619,446 @@ class WorkflowRulesTest(unittest.TestCase):
             independent_reviewer_agent="not-applicable",
             independent_review_not_applicable_reason="Codex performs the inline Review",
         )
-        self.validator.validate_handoff_contract(valid, "compact-inline-review")
+        self.validator.validate_legacy_handoff_contract(valid, "compact-inline-review")
 
         for reason in (None, "", "   "):
             invalid = dict(valid)
             invalid["independent_review_not_applicable_reason"] = reason
             with self.subTest(reason=reason):
                 with self.assertRaisesRegex(AssertionError, "reason|non-blank"):
-                    self.validator.validate_handoff_contract(invalid, "missing-na-reason")
+                    self.validator.validate_legacy_handoff_contract(invalid, "missing-na-reason")
 
         concrete = schema4_contract(
             self.validator, self.handoff, risk_profile="compact",
             independent_review_not_applicable_reason="must be null",
         )
         with self.assertRaisesRegex(AssertionError, "reason|not-applicable|null"):
-            self.validator.validate_handoff_contract(concrete, "unexpected-na-reason")
+            self.validator.validate_legacy_handoff_contract(concrete, "unexpected-na-reason")
+
+    def test_role_first_standalone_review_wording_is_exact(self):
+        example = (
+            "Review purpose: inspect the current implementation plan and decide PASS or "
+            "BLOCKED; reviewer product: codex; role: independent-reviewer; capability: "
+            "control-plane-high; independence: a user-opened new-window instance distinct "
+            "from the plan author and executor; authority: governed Review evidence only."
+        )
+        metadata = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        self.assertIn(example, self.skill)
+        self.assertIn(example, metadata)
+        normalized_skill = " ".join(self.skill.split())
+        for product in ("codex", "pi", "antigravity-cli", "grok-cli"):
+            self.assertIn(product, self.governor)
+        for phrase in (
+            "canonical assignment",
+            "explicitly selected by the user",
+            "one concrete eligible product",
+            "another agent",
+            "independent agent",
+            "another model",
+            "BLOCKED",
+        ):
+            self.assertIn(phrase, normalized_skill)
+
+    def test_role_first_review_kind_matrix_is_explicit(self):
+        normalized = " ".join(self.skill.split())
+        for phrase in (
+            "A Review that decides whether implementation, execution, runtime "
+            "planning, promotion, archive, or completion may proceed is "
+            "gate-bearing",
+            "use role `independent-reviewer`, profile `control-plane-high`, "
+            "distinct-instance independence, and authority "
+            "`governed-review-evidence`",
+            "A standalone Review that explicitly does not decide a gate is advisory",
+            "preserve any eligible user-selected product, use role "
+            "`advisory-reviewer`, profile `control-plane-high`, "
+            "advisory-not-gate-bearing independence, and authority `advisory-input`",
+            "`cohesive-medium` and `mechanical-low` are "
+            "executor/evidence-collection profiles, not Review profiles",
+            "For standalone prompt or recommendation wording, a request to open "
+            "or name a new distinct reviewer instance remains actionable after "
+            "all six assignment concepts are resolved",
+            "do not infer unavailability merely because a concrete instance ID "
+            "or open window is not yet supplied",
+            "Return `BLOCKED` only when the request explicitly says no eligible "
+            "distinct instance exists or insists on reusing an implementation instance",
+            "return `BLOCKED` with `blocker_owner: user` and a non-blank resume condition",
+        ):
+            self.assertIn(phrase, normalized)
+
+    def test_schema6_templates_display_complete_reviewer_assignment(self):
+        templates = (
+            "agy-dispatch-template.md",
+            "brief-template.md",
+            "report-template.md",
+            "review-template.md",
+            "timeout-audit-template.md",
+        )
+        required = (
+            "schema 6",
+            "Review purpose object",
+            "Review purpose decision",
+            "reviewer product",
+            "reviewer instance",
+            "reviewer role",
+            "capability profile",
+            "distinct_from",
+            "result authority",
+        )
+        for filename in templates:
+            text = (ROOT / "references" / filename).read_text(encoding="utf-8")
+            normalized = " ".join(text.split())
+            with self.subTest(template=filename):
+                for field in required:
+                    self.assertIn(field, normalized)
+
+    def test_current_companion_surfaces_reject_legacy_current_wording(self):
+        surfaces = (
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/agy-dispatch-template.md",
+            "references/brief-template.md",
+            "references/report-template.md",
+            "references/review-template.md",
+            "references/timeout-audit-template.md",
+        )
+        forbidden = (
+            "schema-version-5",
+            "schema-5 Handoff",
+            "Compact null reviewer",
+            "只有 compact 可记录带非空理由的 null reviewer",
+        )
+        for relative in surfaces:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(surface=relative):
+                for phrase in forbidden:
+                    self.assertNotIn(phrase, text)
+
+    def test_public_docs_bind_current_schema6_and_schema2_evidence(self):
+        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "README_cn.md").read_text(encoding="utf-8")
+        self.assertIn("Current governed status uses schema 6", english)
+        self.assertIn("schema-2 evidence manifests", english)
+        self.assertIn("Frozen schema-4/schema-5", english)
+        self.assertNotIn("schema-1 role/result/change/batch/attempt/source", english)
+        self.assertIn("当前受治理状态使用 schema 6", chinese)
+        self.assertIn("schema-2 evidence manifest", chinese)
+        self.assertIn("冻结的 schema-4/schema-5", chinese)
+        self.assertNotIn("schema 1 role/result/change/batch/attempt/source", chinese)
+
+
+    def test_schema6_current_contract_accepts_all_four_reviewer_products(self):
+        products = (
+            ("codex", "codex-reviewer-02"),
+            ("pi", "pi-reviewer-02"),
+            ("antigravity-cli", "antigravity-reviewer-02"),
+            ("grok-cli", "grok-reviewer-02"),
+        )
+        for product, instance in products:
+            data = schema6_contract(self.validator, self.handoff)
+            data["reviewer_assignment"] = standard_reviewer_assignment(product, instance)
+            assert_schema6_fixture(data)
+            with self.subTest(product=product):
+                self.validator.validate_handoff_contract(data, "schema6-valid")
+
+    def test_schema6_reviewer_assignment_exact_shape_fails_closed(self):
+        invalid_mutations = (
+            ("missing-assignment", lambda d: d.pop("reviewer_assignment")),
+            ("missing-purpose", lambda d: d["reviewer_assignment"].pop("review_purpose")),
+            (
+                "blank-purpose",
+                lambda d: d["reviewer_assignment"]["review_purpose"].update(object=" "),
+            ),
+            (
+                "extra-purpose",
+                lambda d: d["reviewer_assignment"]["review_purpose"].update(extra="x"),
+            ),
+            (
+                "bad-independence-kind",
+                lambda d: d["reviewer_assignment"]["independence_requirement"].update(
+                    kind="session-label"
+                ),
+            ),
+            (
+                "duplicate-independence-target",
+                lambda d: d["reviewer_assignment"]["independence_requirement"].update(
+                    distinct_from=["executor_assignment", "executor_assignment"]
+                ),
+            ),
+            (
+                "canonical-authority",
+                lambda d: d["reviewer_assignment"].update(
+                    result_authority="canonical-decision"
+                ),
+            ),
+            (
+                "unknown-product",
+                lambda d: d["reviewer_assignment"].update(agent_product="unknown-agent"),
+            ),
+        )
+        for label, mutate in invalid_mutations:
+            data = schema6_contract(self.validator, self.handoff)
+            assert_schema6_fixture(data)
+            mutate(data)
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "reviewer_assignment|review_purpose|independence|result_authority|agent_product",
+                ):
+                    self.validator.validate_handoff_contract(data, label)
+
+    def test_schema6_standard_strict_and_compact_profiles_are_exact(self):
+        for profile in ("standard", "strict"):
+            valid = schema6_contract(self.validator, self.handoff, risk_profile=profile)
+            self.validator.validate_handoff_contract(valid, f"{profile}-valid")
+
+            invalid_cases = []
+            wrong_targets = copy.deepcopy(valid)
+            wrong_targets["reviewer_assignment"]["independence_requirement"][
+                "distinct_from"
+            ] = ["executor_assignment"]
+            invalid_cases.append(("independence", wrong_targets))
+
+            same_instance = copy.deepcopy(valid)
+            same_instance["reviewer_assignment"]["agent_instance_id"] = (
+                same_instance["control_plane_owner"]["agent_instance_id"]
+            )
+            invalid_cases.append(("instance", same_instance))
+
+            wrong_role = copy.deepcopy(valid)
+            wrong_role["reviewer_assignment"]["agent_role"] = "control-plane"
+            invalid_cases.append(("agent_role", wrong_role))
+
+            wrong_profile = copy.deepcopy(valid)
+            wrong_profile["reviewer_assignment"]["capability_profile"] = "cohesive-medium"
+            invalid_cases.append(("capability_profile", wrong_profile))
+
+            unexpected_reason = copy.deepcopy(valid)
+            unexpected_reason["independent_review_not_applicable_reason"] = "not allowed"
+            invalid_cases.append(("reason", unexpected_reason))
+
+            for expected, invalid in invalid_cases:
+                with self.subTest(profile=profile, invalid=expected):
+                    with self.assertRaisesRegex(
+                        AssertionError,
+                        f"{expected}|reviewer_assignment|standard|strict",
+                    ):
+                        self.validator.validate_handoff_contract(invalid, "invalid-profile")
+
+        compact = compact_schema6_contract(self.validator, self.handoff)
+        self.validator.validate_handoff_contract(compact, "compact-valid")
+        owner = compact["control_plane_owner"]
+        reviewer = compact["reviewer_assignment"]
+        self.assertEqual(
+            {
+                key: reviewer[key]
+                for key in (
+                    "agent_product", "agent_instance_id", "agent_role",
+                    "capability_profile",
+                )
+            },
+            owner,
+        )
+
+        compact_cases = []
+        wrong_identity = copy.deepcopy(compact)
+        wrong_identity["reviewer_assignment"]["agent_instance_id"] = "codex-reviewer-09"
+        compact_cases.append(("control-plane|identity|instance", wrong_identity))
+        wrong_targets = copy.deepcopy(compact)
+        wrong_targets["reviewer_assignment"]["independence_requirement"][
+            "distinct_from"
+        ] = ["control_plane_owner", "executor_assignment"]
+        compact_cases.append(("independence", wrong_targets))
+        same_executor = copy.deepcopy(compact)
+        same_executor["executor_assignment"]["agent_instance_id"] = owner["agent_instance_id"]
+        compact_cases.append(("executor|instance|distinct", same_executor))
+        blank_reason = copy.deepcopy(compact)
+        blank_reason["independent_review_not_applicable_reason"] = " "
+        compact_cases.append(("reason|non-blank", blank_reason))
+        for expected, invalid in compact_cases:
+            with self.subTest(compact_invalid=expected):
+                with self.assertRaisesRegex(AssertionError, expected):
+                    self.validator.validate_handoff_contract(invalid, "invalid-compact")
+
+    def test_schema6_current_and_legacy_validation_are_isolated(self):
+        current_cases = (
+            ("schema4", schema4_contract(self.validator, self.handoff)),
+            ("schema5", schema5_contract(self.validator, self.handoff)),
+        )
+        for label, data in current_cases:
+            with self.subTest(current_rejects=label):
+                with self.assertRaisesRegex(
+                    AssertionError, "current.*6|schema_version.*6"
+                ):
+                    self.validator.validate_handoff_contract(data, label)
+
+        missing = self.validator.extract_handoff_contract(self.handoff, "missing")
+        missing.pop("schema_version")
+        with self.assertRaisesRegex(AssertionError, "current.*6|schema_version.*6"):
+            self.validator.validate_handoff_contract(missing, "missing-schema")
+
+        mislabeled = schema5_contract(self.validator, self.handoff)
+        mislabeled["schema_version"] = 6
+        with self.assertRaisesRegex(
+            AssertionError,
+            "reviewer_assignment|missing contract fields|unexpected contract fields",
+        ):
+            self.validator.validate_handoff_contract(mislabeled, "mislabeled-schema5")
+
+        self.assertTrue(
+            hasattr(self.validator, "validate_legacy_handoff_contract"),
+            "production legacy-only validator API is missing",
+        )
+
+    def test_schema6_legacy_inventory_is_read_only_and_non_authorizing(self):
+        self.assertTrue(
+            hasattr(self.validator, "inventory_legacy_handoffs"),
+            "production legacy inventory API is missing",
+        )
+        inventory = getattr(self.validator, "inventory_legacy_handoffs")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = root / "status.md"
+            status.write_text(
+                render_handoff_contract(
+                    self.validator, schema5_contract(self.validator, self.handoff)
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                self.validator,
+                "validate_transition",
+                side_effect=AssertionError("legacy inventory called current transition"),
+            ), mock.patch.object(
+                self.validator,
+                "validate_evidence_artifacts",
+                side_effect=AssertionError("legacy inventory called evidence authority"),
+            ):
+                records = inventory([root])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            set(records[0]),
+            {"path", "schema_version", "lifecycle_state", "sha256", "drain_status"},
+        )
+        self.assertEqual(records[0]["schema_version"], 5)
+        self.assertEqual(records[0]["lifecycle_state"], "ready-for-brief")
+
+    def test_schema6_pi_is_current_only_and_cannot_backfill_legacy(self):
+        self.assertTrue(
+            hasattr(self.validator, "validate_legacy_handoff_contract"),
+            "production legacy-only validator API is missing",
+        )
+        validate_legacy = getattr(self.validator, "validate_legacy_handoff_contract")
+
+        schema4 = schema4_contract(
+            self.validator, self.handoff, independent_reviewer_agent="pi"
+        )
+        with self.assertRaisesRegex(AssertionError, "reviewer|product|identity|agent"):
+            validate_legacy(schema4, "schema4-pi")
+
+        schema5 = schema5_contract(self.validator, self.handoff)
+        schema5["independent_reviewer_assignment"]["agent_product"] = "pi"
+        with self.assertRaisesRegex(AssertionError, "agent_product|product"):
+            validate_legacy(schema5, "schema5-pi")
+
+        schema6 = schema6_contract(self.validator, self.handoff)
+        schema6["reviewer_assignment"] = standard_reviewer_assignment(
+            "pi", "pi-reviewer-02"
+        )
+        self.validator.validate_handoff_contract(schema6, "schema6-pi")
+
+    def test_schema6_reviewer_assignment_is_fully_readonly(self):
+        readonly_mutations = (
+            (("review_purpose", "object"), "changed review object"),
+            (("review_purpose", "decision"), "changed review decision"),
+            (("agent_product",), "pi"),
+            (("agent_instance_id",), "changed-reviewer-09"),
+            (("agent_role",), "control-plane"),
+            (("capability_profile",), "cohesive-medium"),
+            (
+                ("independence_requirement", "distinct_from"),
+                ["executor_assignment"],
+            ),
+            (("result_authority",), "canonical-control-plane-decision"),
+        )
+        for changed_path, changed_value in readonly_mutations:
+            before = schema6_contract(self.validator, self.handoff)
+            after = copy.deepcopy(before)
+            after["contract_revision"] += 1
+            after["lifecycle_state"] = "ready-for-execution"
+            after["next_owner"] = "external-agent"
+            set_nested(after["reviewer_assignment"], changed_path, changed_value)
+            with self.subTest(changed_path=changed_path):
+                with self.assertRaisesRegex(
+                    AssertionError, "readonly|reviewer_assignment"
+                ):
+                    self.validator.validate_transition(
+                        before, after, "assignment-mutation"
+                    )
+
+    def test_schema6_pi_review_evidence_matches_assignment_without_promotion(self):
+        data = schema6_contract(self.validator, self.handoff)
+        data["reviewer_assignment"] = standard_reviewer_assignment(
+            "pi", "pi-reviewer-02"
+        )
+        data.update(
+            lifecycle_state="ready-for-brief",
+            current_batch=2,
+            contract_revision=4,
+            last_review_result="pass",
+            attempt_report_artifact=artifact("report.md"),
+            last_review_artifact=artifact("review.md"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            materialize_schema5_lease(data, root)
+            report = root / "report.md"
+            report.write_text(
+                schema2_assignment_evidence_manifest(
+                    "attempt-report",
+                    "pass",
+                    data["executor_assignment"],
+                    contract_revision=1,
+                ),
+                encoding="utf-8",
+            )
+            data["attempt_report_artifact"]["sha256"] = hashlib.sha256(
+                report.read_bytes()
+            ).hexdigest()
+            review = root / "review.md"
+            review.write_text(
+                schema2_assignment_evidence_manifest(
+                    "batch-review", "pass", data["reviewer_assignment"]
+                ),
+                encoding="utf-8",
+            )
+            data["last_review_artifact"]["sha256"] = hashlib.sha256(
+                review.read_bytes()
+            ).hexdigest()
+            self.validator.validate_handoff_contract(data, "schema6-pi-evidence")
+            canonical_before = copy.deepcopy(data)
+            self.validator.validate_evidence_artifacts(
+                data, root, "schema6-pi-evidence"
+            )
+            self.assertEqual(data, canonical_before)
+
+            review.write_text(
+                schema2_assignment_evidence_manifest(
+                    "batch-review",
+                    "pass",
+                    standard_reviewer_assignment("codex", "pi-reviewer-02"),
+                ),
+                encoding="utf-8",
+            )
+            data["last_review_artifact"]["sha256"] = hashlib.sha256(
+                review.read_bytes()
+            ).hexdigest()
+            with self.assertRaisesRegex(
+                AssertionError, "identity|role|profile|assignment"
+            ):
+                self.validator.validate_evidence_artifacts(
+                    data, root, "schema6-pi-impersonation"
+                )
+
 
     def test_schema4_agent_identity_fields_are_immutable(self):
         before = schema4_contract(self.validator, self.handoff)
@@ -436,7 +1073,7 @@ class WorkflowRulesTest(unittest.TestCase):
             AssertionError,
             "readonly field changed: (executor_agent|independent_reviewer_agent)",
         ):
-            self.validator.validate_transition(before, after, "identity-change")
+            self.validator._validate_legacy_transition(before, after, "identity-change")
 
     def test_attempt_report_manifest_binds_executor_identity_and_role(self):
         data = schema4_contract(
@@ -451,15 +1088,15 @@ class WorkflowRulesTest(unittest.TestCase):
             data["attempt_report_artifact"] = {
                 "path": "report.md", "sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
             }
-            self.validator.validate_handoff_contract(data, "executor-evidence")
-            self.validator.validate_evidence_artifacts(data, root, "executor-evidence")
+            self.validator.validate_legacy_handoff_contract(data, "executor-evidence")
+            self.validator._validate_legacy_evidence_artifacts(data, root, "executor-evidence")
 
             report.write_text(evidence_manifest(
                 "attempt-report", "pass", agent_identity="grok-cli", agent_role="independent-reviewer",
             ), encoding="utf-8")
             data["attempt_report_artifact"]["sha256"] = hashlib.sha256(report.read_bytes()).hexdigest()
             with self.assertRaisesRegex(AssertionError, "identity|role|executor|impersonation"):
-                self.validator.validate_evidence_artifacts(data, root, "executor-impersonation")
+                self.validator._validate_legacy_evidence_artifacts(data, root, "executor-impersonation")
 
     def test_batch_review_rejects_executor_self_review_and_impersonation(self):
         data = schema4_contract(
@@ -484,9 +1121,9 @@ class WorkflowRulesTest(unittest.TestCase):
             data["last_review_artifact"] = {
                 "path": "review.md", "sha256": hashlib.sha256(review.read_bytes()).hexdigest(),
             }
-            self.validator.validate_handoff_contract(data, "review-impersonation")
+            self.validator.validate_legacy_handoff_contract(data, "review-impersonation")
             with self.assertRaisesRegex(AssertionError, "identity|reviewer|self-review|impersonation"):
-                self.validator.validate_evidence_artifacts(data, root, "review-impersonation")
+                self.validator._validate_legacy_evidence_artifacts(data, root, "review-impersonation")
 
     def test_timeout_audit_binds_codex_decision_owner_for_shared_artifact(self):
         data = schema4_contract(
@@ -502,8 +1139,8 @@ class WorkflowRulesTest(unittest.TestCase):
             ref = {"path": "timeout.md", "sha256": hashlib.sha256(timeout.read_bytes()).hexdigest()}
             data["attempt_report_artifact"] = ref
             data["last_review_artifact"] = ref
-            self.validator.validate_handoff_contract(data, "timeout-identity")
-            self.validator.validate_evidence_artifacts(data, root, "timeout-identity")
+            self.validator.validate_legacy_handoff_contract(data, "timeout-identity")
+            self.validator._validate_legacy_evidence_artifacts(data, root, "timeout-identity")
 
     def test_fallback_scalar_parser_handles_yaml_booleans_and_null(self):
         self.assertIs(self.validator.parse_scalar("true"), True)
@@ -585,9 +1222,8 @@ class WorkflowRulesTest(unittest.TestCase):
             self.validator.validate_handoff_contract(data, "blocked-pass")
 
     def test_compact_contract_still_requires_typed_evidence_fields(self):
-        data = self.validator.extract_handoff_contract(self.handoff, "handoff")
+        data = compact_schema6_contract(self.validator, self.handoff)
         data.update(
-            risk_profile="compact",
             step_critical="pytest",
             final_critical="pytest",
             stop_conditions="none",
@@ -641,8 +1277,8 @@ class WorkflowRulesTest(unittest.TestCase):
         self.validator.validate_transition(before, after, "final-gate-fix")
 
     def test_all_external_profiles_require_nonblank_critical_commands(self):
-        data = self.validator.extract_handoff_contract(self.handoff, "handoff")
-        data.update(risk_profile="compact", step_critical=[], final_critical=[])
+        data = compact_schema6_contract(self.validator, self.handoff)
+        data.update(step_critical=[], final_critical=[])
         with self.assertRaisesRegex(AssertionError, "step_critical|final_critical"):
             self.validator.validate_handoff_contract(data, "empty-critical")
 
@@ -722,14 +1358,31 @@ class WorkflowRulesTest(unittest.TestCase):
             current_batch=2,
             contract_revision=4,
             last_review_result="pass",
+            attempt_report_artifact=artifact("docs/agent-collab/change/report.md"),
             last_review_artifact=artifact("docs/review/batch.md"),
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             materialize_schema5_lease(data if "data" in locals() else current, root)
+            report = root / "docs" / "agent-collab" / "change" / "report.md"
+            report.parent.mkdir(parents=True)
+            report.write_text(
+                schema5_evidence_manifest(
+                    "attempt-report", "pass", contract_revision=1
+                ),
+                encoding="utf-8",
+            )
+            data["attempt_report_artifact"]["sha256"] = hashlib.sha256(
+                report.read_bytes()
+            ).hexdigest()
             review = root / "docs" / "review" / "batch.md"
             review.parent.mkdir(parents=True)
-            review.write_text(schema5_evidence_manifest("batch-review", "pass"), encoding="utf-8")
+            review.write_text(
+                schema5_evidence_manifest(
+                    "batch-review", "pass", contract_revision=2
+                ),
+                encoding="utf-8",
+            )
             data["last_review_artifact"]["sha256"] = hashlib.sha256(review.read_bytes()).hexdigest()
             self.validator.validate_evidence_artifacts(data, root, "runtime")
             data["last_review_artifact"]["sha256"] = "0" * 64
@@ -1350,7 +2003,7 @@ class WorkflowRulesTest(unittest.TestCase):
         }
 
     def _schema5_contract(self):
-        data = self.validator.extract_handoff_contract(self.handoff, "handoff")
+        data = schema5_contract(self.validator, self.handoff)
         for key in (
             "executor_agent", "independent_reviewer_agent", "decision_owner",
         ):
@@ -1382,7 +2035,7 @@ class WorkflowRulesTest(unittest.TestCase):
                 "sha256": "c" * 64,
             },
         })
-        data["readonly_fields"] = list(self.validator.IMMUTABLE_FIELDS)
+        data["readonly_fields"] = list(self.validator.SCHEMA5_IMMUTABLE_FIELDS)
         return data
 
     def test_tiered_01_platform_permission_reuses_safe_command_lease(self):
@@ -1457,10 +2110,14 @@ class WorkflowRulesTest(unittest.TestCase):
 
     def test_tiered_08_same_product_instances_cannot_self_review(self):
         contract = self._schema5_contract()
-        self.validator.validate_handoff_contract(contract, "same-product-distinct-instance")
+        self.validator.validate_legacy_handoff_contract(
+            contract, "same-product-distinct-instance"
+        )
         contract["independent_reviewer_assignment"]["agent_instance_id"] = "codex-executor-01"
         with self.assertRaisesRegex(AssertionError, "instance"):
-            self.validator.validate_handoff_contract(contract, "same-instance-self-review")
+            self.validator.validate_legacy_handoff_contract(
+                contract, "same-instance-self-review"
+            )
 
     def test_tiered_09_single_correction_creates_candidate_without_promotion(self):
         evaluate = getattr(self.validator, "evaluate_learning_candidate", None)
@@ -1513,7 +2170,9 @@ class WorkflowRulesTest(unittest.TestCase):
         )
 
     def test_schema5_runtime_validates_confirmation_lease_artifact(self):
-        validate = getattr(self.validator, "validate_confirmation_lease_artifact", None)
+        validate = getattr(
+            self.validator, "_validate_legacy_confirmation_lease_artifact", None
+        )
         self.assertTrue(callable(validate), "runtime lease artifact validation is not implemented")
         data = self._schema5_contract()
         with tempfile.TemporaryDirectory() as directory:
@@ -1558,15 +2217,34 @@ class WorkflowRulesTest(unittest.TestCase):
             root = Path(directory)
             status = root / "docs" / "agent-collab" / "legacy" / "status.md"
             status.parent.mkdir(parents=True)
+            active = schema4_contract(
+                self.validator,
+                self.handoff,
+                lifecycle_state="ready-for-execution",
+                next_owner="external-agent",
+            )
             status.write_text(
-                "<!-- COOP_HANDOFF_CONTRACT_START -->\n```yaml\n"
-                "schema_version: 4\nchange_id: legacy\ncontract_revision: 2\n"
-                "lifecycle_state: ready-for-execution\n```\n"
-                "<!-- COOP_HANDOFF_CONTRACT_END -->\n",
-                encoding="utf-8",
+                render_handoff_contract(self.validator, active), encoding="utf-8"
             )
             self.assertEqual([status.resolve()], inventory([root]))
-            status.write_text(status.read_text().replace("ready-for-execution", "complete"), encoding="utf-8")
+
+            complete = schema4_contract(
+                self.validator,
+                self.handoff,
+                lifecycle_state="complete",
+                current_batch=2,
+                last_review_result="pass",
+                final_verification="pass",
+                final_review_result="pass",
+                attempt_report_artifact=artifact("report.md"),
+                last_review_artifact=artifact("review.md"),
+                final_verification_artifact=artifact("verification.md"),
+                final_review_artifact=artifact("final-review.md"),
+                next_owner="user",
+            )
+            status.write_text(
+                render_handoff_contract(self.validator, complete), encoding="utf-8"
+            )
             self.assertEqual([], inventory([root]))
 
 
@@ -1585,7 +2263,7 @@ class WorkflowRulesTest(unittest.TestCase):
             next_owner="user",
             confirmation_lease_status="revoked",
         )
-        self.validator.validate_transition(before, after, "revoke-lease")
+        self.validator._validate_legacy_transition(before, after, "revoke-lease")
         recovered = dict(after)
         recovered.update(
             lifecycle_state="ready-for-execution",
@@ -1600,7 +2278,9 @@ class WorkflowRulesTest(unittest.TestCase):
             confirmation_lease_status="valid",
         )
         with self.assertRaisesRegex(AssertionError, "revoked|new.*Lease|reactivat"):
-            self.validator.validate_transition(after, recovered, "reactivate-old-lease")
+            self.validator._validate_legacy_transition(
+                after, recovered, "reactivate-old-lease"
+            )
 
 
 if __name__ == "__main__":

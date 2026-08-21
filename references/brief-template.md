@@ -1,8 +1,25 @@
 # <change-id> Step <NN> Attempt <AA> Brief
 
+## Schema 6 Reviewer Assignment
+
+| Field | Bound value |
+|---|---|
+| Review purpose object | `<reviewed object>` |
+| Review purpose decision | `<PASS/FAIL/BLOCKED decision boundary>` |
+| reviewer product | `<codex/pi/antigravity-cli/grok-cli>` |
+| reviewer instance | `<contract-local instance>` |
+| reviewer role | `<independent-reviewer or compact control-plane>` |
+| capability profile | `<control-plane-high>` |
+| `distinct_from` | `<control_plane_owner, executor_assignment or executor_assignment>` |
+| result authority | `governed Review evidence only` |
+
+These fields reproduce the immutable schema 6 `reviewer_assignment`; schema-2
+evidence identity must match this parent assignment and never promotes
+canonical state by itself.
+
 文档类型：Implementation Brief
 日志及版本：YYYY-MM-DD v1
-执行角色：Antigravity CLI / <step role>
+执行角色：<codex/pi/antigravity-cli/grok-cli> / <step role>
 预计耗时：<例如 30m；超过后 Codex 可写 timeout audit>
 
 ## 1. 项目路径
@@ -25,7 +42,7 @@ docs/agent-collab/<change-id>/status.md
 
 | 字段 | 值 |
 |---|---|
-| `schema_version` | `5` |
+| `schema_version` | `6` |
 | `contract_revision` | `<n>` |
 | `current_batch` / `planned_batches` | `<NN>/<total>` |
 | `attempt` | `<AA>` |
@@ -47,8 +64,8 @@ Report 必须回显同一 execution revision 和 canonical SHA-256。Codex 在�
 Report 的 schema-2 manifest 将 `agent_product` / `agent_instance_id` /
 `agent_role` / `capability_profile` 绑定为 canonical executor assignment。
 Standard/strict Review 必须使用不同 reviewer instance；产品相同也不能
-self-review。只有 compact 可记录带非空理由的 null reviewer，此时绑定
-control-plane assignment 执行 inline Review。
+self-review。Compact 必须把完整 `reviewer_assignment` 绑定到 control-plane
+identity、保持与 executor instance 不同，并记录顶层非空 not-applicable reason。
 
 手工复制本 Brief 不会降级治理。任何 state-changing standard/strict 工作
 仍须引用相同 canonical status、Report path、allow-list 与 evidence chain。
