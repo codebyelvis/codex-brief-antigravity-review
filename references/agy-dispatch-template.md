@@ -57,3 +57,22 @@ docs/agent-collab/<change-id>/<NN>-attempt-<AA>-report-abort.md
 EOF
 )"
 ```
+
+## Optional Runtime Environment Advice
+
+Append the following block only when this dispatch crosses one actual approved
+model/reasoning execution boundary. If the current runtime is sufficient, omit
+the entire block. If an upstream control-plane response already contains it,
+copy it verbatim; do not regenerate it from chat history or ask for another
+notice. The block is human-readable and outside all machine-readable Handoff
+marker material.
+
+```text
+运行环境建议：
+- 目标 Session：
+- 推荐模型：
+- 推理强度：
+- 切换原因：
+- 可复制任务提示词：
+- 完成后切回：
+```

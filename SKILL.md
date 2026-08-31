@@ -24,6 +24,15 @@ execution governor only when a valid Handoff Contract already exists.
 “Review and fix” is not standalone review. Do not silently switch from review
 to implementation.
 
+When the router has already authorized safe, reversible, same-scope work, this
+Companion continues the next approved step without asking for redundant
+confirmation. A status report is a status update and is non-confirmation
+progress, not a confirmation request. It consumes the Router-owned continuation
+rule and does not re-decide scope, risk, acceptance, or authority.
+
+Standalone compact work remains lightweight: continuation wording alone does not
+create a Handoff or an OpenSpec change.
+
 ## Token-lean / Caveman output mode
 
 `caveman` 在本 skill 里仅用于**输出压缩**，不参与治理决策。

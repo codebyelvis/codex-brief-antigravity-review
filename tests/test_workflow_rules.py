@@ -2283,5 +2283,83 @@ class WorkflowRulesTest(unittest.TestCase):
             )
 
 
+class ClosedLoopRuntimeRoutingTests(unittest.TestCase):
+    def test_closed_loop_runtime_routing_fixture(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        normalized = " ".join(skill.split())
+        for phrase in (
+            "When the router has already authorized safe, reversible, same-scope work",
+            "continues the next approved step without asking for redundant confirmation",
+            "status report is a status update and is non-confirmation progress",
+            "consumes the Router-owned continuation rule and does not re-decide scope, risk, acceptance, or authority",
+            "continuation wording alone does not create a Handoff or an OpenSpec change",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(" ".join(phrase.split()), normalized)
+
+    def test_runtime_advice_is_non_authoritative_and_non_marker(self):
+        handoff = (ROOT / "references" / "handoff-contract.md").read_text(encoding="utf-8")
+        advice_sources = {
+            "brief": (ROOT / "references" / "brief-template.md").read_text(encoding="utf-8"),
+            "dispatch": (ROOT / "references" / "agy-dispatch-template.md").read_text(encoding="utf-8"),
+            "handoff": handoff,
+        }
+        for name, source in advice_sources.items():
+            with self.subTest(source=name):
+                self.assertEqual(source.count("运行环境建议："), 1)
+                advice_block = source.split("运行环境建议：", 1)[1].split("```", 1)[0]
+                for field in (
+                    "目标 Session：",
+                    "推荐模型：",
+                    "推理强度：",
+                    "切换原因：",
+                    "可复制任务提示词：",
+                    "完成后切回：",
+                ):
+                    self.assertEqual(advice_block.count(field), 1)
+        self.assertIn("当前运行环境足够时省略整段", advice_sources["brief"])
+        self.assertIn("If the current runtime is sufficient, omit", advice_sources["dispatch"])
+        self.assertIn("Omit the entire block when the current runtime is sufficient", handoff)
+        marker_start = "<!-- COOP_HANDOFF_CONTRACT_START -->"
+        marker_end = "<!-- COOP_HANDOFF_CONTRACT_END -->"
+        self.assertIn(marker_start, handoff)
+        self.assertIn(marker_end, handoff)
+        marker = handoff.split(marker_start, 1)[1].split(marker_end, 1)[0]
+        self.assertNotIn("运行环境建议：", marker)
+        self.assertIn("schema_version: 6", marker)
+        self.assertIn("An old schema-6 Handoff without this optional block remains valid.", handoff)
+
+    def test_closed_loop_preserves_existing_gates(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        companion_sources = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in (
+                "SKILL.md",
+                "references/brief-template.md",
+                "references/agy-dispatch-template.md",
+                "references/handed-off-external-execution.md",
+                "references/handoff-contract.md",
+            )
+        )
+        for phrase in (
+            "Return to `openspec-superpower-change` before any file modification",
+            "It consumes the Router-owned continuation rule",
+            "Standalone compact work remains lightweight",
+            "Every actionable Review finding must be fixed and reviewed again",
+            "Never advance a batch or claim completion",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(" ".join(phrase.split()), " ".join(skill.split()))
+        for owner_only_phrase in (
+            "Closed-loop continuation intent includes",
+            "formal A/B/C options",
+            "smallest adequate design and artifact set",
+            "Ordinary OpenSpec revision, `writing-plans`",
+            "Luna Max",
+        ):
+            with self.subTest(owner_only_phrase=owner_only_phrase):
+                self.assertNotIn(owner_only_phrase, companion_sources)
+
+
 if __name__ == "__main__":
     unittest.main()

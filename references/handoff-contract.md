@@ -115,6 +115,30 @@ readonly_fields:
 <!-- COOP_HANDOFF_CONTRACT_END -->
 ````
 
+## Optional Runtime Environment Advice
+
+An actual approved model or reasoning switch may carry the following optional,
+human-readable block in this reference guidance or in a Brief/dispatch surface.
+Omit the entire block when the current runtime is sufficient. If an upstream
+control-plane response already contains it, downstream surfaces copy it
+verbatim and do not regenerate it or ask for a second notice.
+
+```text
+运行环境建议：
+- 目标 Session：
+- 推荐模型：
+- 推理强度：
+- 切换原因：
+- 可复制任务提示词：
+- 完成后切回：
+```
+
+The block is outside the machine-readable marker above and is never written to
+canonical `docs/agent-collab/<change-id>/status.md`. It does not participate in
+schema parsing, canonical status SHA-256, immutable assignment, evidence
+identity, lifecycle validation, permission checks, or PASS/FAIL/BLOCKED
+decisions. An old schema-6 Handoff without this optional block remains valid.
+
 ## Required Fields And Values
 
 Required fields include every field in the example.

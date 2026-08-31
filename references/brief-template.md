@@ -111,6 +111,20 @@ Dispatch 前必须对本 Brief 当前 revision 执行 **Preflight Review**：
 - `mechanical-low` / `cohesive-medium` 遇到歧义、意外失败、安全字段、
   禁止文件、生产凭据、scope/risk/approval 变化时立即 `BLOCKED`，不得设计或扩展范围。
 
+## 2.5 Optional Runtime Environment Advice
+
+仅当本步骤实际发生模型或推理强度切换时，才附带控制面为该切换生成的一次完整块；当前运行环境足够时省略整段。若上游已有该块，逐字复制，不从 chat history 重生成，也不再次询问。该人类可读块必须位于所有机器可读 schema-6 Handoff marker 之外，且不得写入 canonical `docs/agent-collab/<change-id>/status.md` 或参与其哈希、权限、生命周期和 PASS/FAIL/BLOCKED 校验。
+
+```text
+运行环境建议：
+- 目标 Session：
+- 推荐模型：
+- 推理强度：
+- 切换原因：
+- 可复制任务提示词：
+- 完成后切回：
+```
+
 ## 3. 允许修改的文件
 
 只允许修改：
