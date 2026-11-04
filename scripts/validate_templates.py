@@ -142,6 +142,15 @@ STATE_TUPLES = {
     },
     "complete": {("pass", "pass", "pass")},
 }
+EXPECTED_OWNERS = {
+    "ready-for-brief": {"codex-brief-antigravity-review"},
+    "ready-for-execution": {"external-agent"},
+    "ready-for-review": {"codex-brief-antigravity-review"},
+    "needs-fix": {"codex-brief-antigravity-review", "openspec-superpower-change"},
+    "blocked": NEXT_OWNERS,
+    "awaiting-final-verification": {"openspec-superpower-change"},
+    "complete": {"user"},
+}
 
 
 def parse_scalar(value: str):
@@ -436,16 +445,7 @@ def _validate_schema4_handoff_contract(data: dict, label: str) -> None:
     result_tuple = _result_tuple(data)
     if result_tuple not in STATE_TUPLES[state]:
         raise AssertionError(f"{label}: invalid result tuple for {state}")
-    expected_owners = {
-        "ready-for-brief": {"codex-brief-antigravity-review"},
-        "ready-for-execution": {"external-agent"},
-        "ready-for-review": {"codex-brief-antigravity-review"},
-        "needs-fix": {"codex-brief-antigravity-review", "openspec-superpower-change"},
-        "blocked": NEXT_OWNERS,
-        "awaiting-final-verification": {"openspec-superpower-change"},
-        "complete": {"user"},
-    }
-    if data["next_owner"] not in expected_owners[state]:
+    if data["next_owner"] not in EXPECTED_OWNERS[state]:
         raise AssertionError(f"{label}: invalid next_owner for {state}")
 
     if state == "blocked":
