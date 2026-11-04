@@ -2284,6 +2284,30 @@ class WorkflowRulesTest(unittest.TestCase):
 
 
 class ClosedLoopRuntimeRoutingTests(unittest.TestCase):
+    def test_default_suite_is_repository_local(self):
+        instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "Default tests must run from a standalone checkout without requiring a sibling Router repository.",
+            instructions,
+        )
+        forbidden_parent_access = "ROOT." + "parent"
+        for test_file in sorted((ROOT / "tests").glob("test_*.py")):
+            with self.subTest(test_file=test_file.name):
+                self.assertNotIn(
+                    forbidden_parent_access,
+                    test_file.read_text(encoding="utf-8"),
+                )
+
+    def test_companion_repo_source_of_truth_and_push_closure_rule(self):
+        instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        for phrase in (
+            "This repository (`/Users/elvis/file/develop/opensource/codex-brief-antigravity-review`) is the canonical Git source of truth",
+            "Never edit only installed runtime copies (`~/.codex/skills/codex-brief-antigravity-review`",
+            "When user push authorization or a companion sync-push closure applies, commit and `git push origin main` in this repository",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, instructions)
+
     def test_closed_loop_runtime_routing_fixture(self):
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         normalized = " ".join(skill.split())
