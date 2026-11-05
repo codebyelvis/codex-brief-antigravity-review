@@ -1582,6 +1582,7 @@ def validate_companion_entry(skill: str) -> None:
             violations.append(f"missing {needle!r}")
     for forbidden in (
         "### Artifact Paths", "### State Machine", "## Evidence Profiles",
+        "## Role-first Review assignment", "ROLE_FIRST_REVIEW_CLASSIFICATION",
     ):
         if forbidden in skill:
             violations.append(f"embedded handed-off detail {forbidden!r}")
@@ -1591,7 +1592,7 @@ def validate_companion_entry(skill: str) -> None:
 
 def validate_handoff_governor(governor: str) -> None:
     normalized_bytes = (governor.rstrip() + "\n").encode("utf-8")
-    expected_hash = "0931999b997b93da601d443b5bdf7a3486f950ab47ef7d96c31c19a6911fc1fe"
+    expected_hash = "1407cdf58896cfe8f378a16a4c6dc6ae0068028b7e83aefd80b966465fca9e80"
     if hashlib.sha256(normalized_bytes).hexdigest() != expected_hash:
         raise AssertionError(
             "handed-off-external-execution.md: migrated governor content hash drift"

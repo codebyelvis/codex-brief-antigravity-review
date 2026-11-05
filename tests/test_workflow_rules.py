@@ -431,6 +431,12 @@ class WorkflowRulesTest(unittest.TestCase):
             "Evidence Profiles moved out of entry": (
                 "## Evidence Profiles" not in self.skill
             ),
+            "Role assignment moved out of entry": (
+                "## Role-first Review assignment" not in self.skill
+            ),
+            "Role classification moved out of entry": (
+                "ROLE_FIRST_REVIEW_CLASSIFICATION" not in self.skill
+            ),
         }
         for label, condition in checks.items():
             with self.subTest(label=label):
@@ -443,7 +449,7 @@ class WorkflowRulesTest(unittest.TestCase):
         normalized_bytes = (governor.rstrip() + "\n").encode("utf-8")
         self.assertEqual(
             hashlib.sha256(normalized_bytes).hexdigest(),
-            "0931999b997b93da601d443b5bdf7a3486f950ab47ef7d96c31c19a6911fc1fe",
+            "1407cdf58896cfe8f378a16a4c6dc6ae0068028b7e83aefd80b966465fca9e80",
         )
         for needle in (
             "schema-version-6", "schema-4/schema-5", "Artifact Paths", "State Machine",
@@ -480,12 +486,12 @@ class WorkflowRulesTest(unittest.TestCase):
             section,
         )
         self.assertIn(
-            "Default to findings-first output: scope/evidence, actionable "
-            "findings, verdict, and next action.",
+            "Output only scope/evidence, actionable findings, "
+            "PASS/FAIL/BLOCKED, and next action.",
             section,
         )
         self.assertIn(
-            "Omit governance narration unless it changes the result or next action.",
+            "Do not load role assignment or ROLE_FIRST classification for this route.",
             section,
         )
 
@@ -643,9 +649,10 @@ class WorkflowRulesTest(unittest.TestCase):
             "from the plan author and executor; authority: governed Review evidence only."
         )
         metadata = (ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
-        self.assertIn(example, self.skill)
+        self.assertIn(example, self.governor)
+        self.assertNotIn(example, self.skill)
         self.assertIn(example, metadata)
-        normalized_skill = " ".join(self.skill.split())
+        normalized_governor = " ".join(self.governor.split())
         for product in ("codex", "pi", "antigravity-cli", "grok-cli"):
             self.assertIn(product, self.governor)
         for phrase in (
@@ -657,10 +664,11 @@ class WorkflowRulesTest(unittest.TestCase):
             "another model",
             "BLOCKED",
         ):
-            self.assertIn(phrase, normalized_skill)
+            self.assertIn(phrase, normalized_governor)
 
     def test_role_first_review_kind_matrix_is_explicit(self):
-        normalized = " ".join(self.skill.split())
+        self.assertNotIn("ROLE_FIRST_REVIEW_CLASSIFICATION", self.skill)
+        normalized = " ".join(self.governor.split())
         for phrase in (
             "A Review that decides whether implementation, execution, runtime "
             "planning, promotion, archive, or completion may proceed is "
@@ -2366,7 +2374,8 @@ class ClosedLoopRuntimeRoutingTests(unittest.TestCase):
             )
         )
         for phrase in (
-            "Return to `openspec-superpower-change` before any file modification",
+            "Load `openspec-superpower-change` only for explicit OpenSpec, change-gate or routing requests",
+            "Ordinary file edits and same-scope continuation do not automatically load the Router",
             "It consumes the Router-owned continuation rule",
             "Standalone compact work remains lightweight",
             "Every actionable Review finding must be fixed and reviewed again",

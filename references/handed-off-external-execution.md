@@ -98,3 +98,44 @@ Historical schema-4/schema-5 contracts and their evidence remain immutable.
 Review records
 from/to revision and canonical SHA-256 transition evidence; `complete` runtime
 validation requires the actual previous status.
+
+## Role-first Review assignment
+
+For schema 6, `codex`, `pi`, `antigravity-cli`, and `grok-cli` are equally
+eligible for assigned executor or independent-reviewer roles. Only a bound
+`codex` product with role `control-plane`, profile `control-plane-high`, the
+matching instance, and canonical contract owns routing, evidence acceptance,
+canonical state, archive, or completion. Product names alone grant no authority.
+
+Every Review request states Review purpose, reviewer product, role, capability,
+independence, and authority. Apply an existing canonical assignment first;
+otherwise preserve a product explicitly selected by the user; otherwise name
+one concrete eligible product. If no eligible independent instance is
+available, return `BLOCKED`. “another agent”, “independent agent”, and “another
+model” are invalid when they are the only destination.
+
+<!-- ROLE_FIRST_REVIEW_CLASSIFICATION_START -->
+Use this exact classification before selecting a product:
+
+- A Review that decides whether implementation, execution, runtime planning,
+  promotion, archive, or completion may proceed is gate-bearing: use role
+  `independent-reviewer`, profile `control-plane-high`, distinct-instance
+  independence, and authority `governed-review-evidence`.
+- A standalone Review that explicitly does not decide a gate is advisory:
+  preserve any eligible user-selected product, use role `advisory-reviewer`,
+  profile `control-plane-high`, advisory-not-gate-bearing independence, and
+  authority `advisory-input`.
+- `cohesive-medium` and `mechanical-low` are executor/evidence-collection
+  profiles, not Review profiles.
+- For standalone prompt or recommendation wording, a request to open or name a
+  new distinct reviewer instance remains actionable after all six assignment
+  concepts are resolved; do not infer unavailability merely because a concrete
+  instance ID or open window is not yet supplied.
+- Return `BLOCKED` only when the request explicitly says no eligible distinct
+  instance exists or insists on reusing an implementation instance.
+- When a required distinct reviewer instance is unavailable because the user
+  must open or provide one, return `BLOCKED` with `blocker_owner: user` and a
+  non-blank resume condition.
+<!-- ROLE_FIRST_REVIEW_CLASSIFICATION_END -->
+
+Review purpose: inspect the current implementation plan and decide PASS or BLOCKED; reviewer product: codex; role: independent-reviewer; capability: control-plane-high; independence: a user-opened new-window instance distinct from the plan author and executor; authority: governed Review evidence only.

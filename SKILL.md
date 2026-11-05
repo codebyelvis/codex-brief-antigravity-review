@@ -17,9 +17,11 @@ execution governor only when a valid Handoff Contract already exists.
    valid Handoff Contract and the task is dispatch, Report audit, retry,
    recovery, or batch promotion. A manually copied state-changing standard or
    strict Brief uses this same route; copy/paste does not make it standalone.
-3. Return to `openspec-superpower-change` before any file modification,
-   implementation, behavior change, workflow/template edit, OpenSpec/risk
-   decision, or final task completion decision.
+3. Load `openspec-superpower-change` only for explicit OpenSpec, change-gate
+   or routing requests, 「迭代优化skill」, or explicit archive/distillation requests.
+   Existing valid Handoff governance retains its Router-owned decisions and
+   final return. Ordinary file edits and same-scope continuation do not
+   automatically load the Router.
 
 “Review and fix” is not standalone review. Do not silently switch from review
 to implementation.
@@ -52,9 +54,10 @@ read-only Review request.
 
 For OpenSpec artifacts, inspect proposal scope, spec scenarios,
 design decisions and risks, task traceability, and cross-artifact consistency.
-Default to findings-first output: scope/evidence, actionable findings, verdict,
-and next action. Omit governance narration unless it changes the result or next
-action.
+Output only scope/evidence, actionable findings, PASS/FAIL/BLOCKED, and next
+action. Do not load role assignment or ROLE_FIRST classification for this route.
+The verdict is advisory; it does not authorize implementation, batch promotion,
+or final completion.
 
 This path does not require an OpenSpec proposal, Handoff Contract, Superpowers
 plan, or collaboration artifact. Produce the requested prompt/Brief/checklist
@@ -65,8 +68,9 @@ another output location.
 - For a diff review, list actionable findings by severity and location.
 - Do not write batch `PASS`, advance shared status, or imply implementation was
   verified when no governed batch exists.
-- If the user asks to save files, apply fixes, dispatch implementation, or
-  change workflow behavior, return to the change gate first.
+- A request to save files, apply fixes, dispatch implementation, or change
+  workflow behavior leaves standalone Review. Apply Route Selection without
+  automatically loading the Router merely because files may change.
 
 ## Handed-off External Execution
 
@@ -78,51 +82,10 @@ The referenced governor preserves the complete Handoff lifecycle, evidence,
 identity, correction-loop, and final-return contract. Batch `PASS` returns to
 `openspec-superpower-change`; it never authorizes final task completion here.
 
-## Role-first Review assignment
-
-For schema 6, `codex`, `pi`, `antigravity-cli`, and `grok-cli` are equally
-eligible for assigned executor or independent-reviewer roles. Only a bound
-`codex` product with role `control-plane`, profile `control-plane-high`, the
-matching instance, and canonical contract owns routing, evidence acceptance,
-canonical state, archive, or completion. Product names alone grant no authority.
-
-Every Review request states Review purpose, reviewer product, role, capability,
-independence, and authority. Apply an existing canonical assignment first;
-otherwise preserve a product explicitly selected by the user; otherwise name
-one concrete eligible product. If no eligible independent instance is
-available, return `BLOCKED`. “another agent”, “independent agent”, and “another
-model” are invalid when they are the only destination.
-
-<!-- ROLE_FIRST_REVIEW_CLASSIFICATION_START -->
-Use this exact classification before selecting a product:
-
-- A Review that decides whether implementation, execution, runtime planning,
-  promotion, archive, or completion may proceed is gate-bearing: use role
-  `independent-reviewer`, profile `control-plane-high`, distinct-instance
-  independence, and authority `governed-review-evidence`.
-- A standalone Review that explicitly does not decide a gate is advisory:
-  preserve any eligible user-selected product, use role `advisory-reviewer`,
-  profile `control-plane-high`, advisory-not-gate-bearing independence, and
-  authority `advisory-input`.
-- `cohesive-medium` and `mechanical-low` are executor/evidence-collection
-  profiles, not Review profiles.
-- For standalone prompt or recommendation wording, a request to open or name a
-  new distinct reviewer instance remains actionable after all six assignment
-  concepts are resolved; do not infer unavailability merely because a concrete
-  instance ID or open window is not yet supplied.
-- Return `BLOCKED` only when the request explicitly says no eligible distinct
-  instance exists or insists on reusing an implementation instance.
-- When a required distinct reviewer instance is unavailable because the user
-  must open or provide one, return `BLOCKED` with `blocker_owner: user` and a
-  non-blank resume condition.
-<!-- ROLE_FIRST_REVIEW_CLASSIFICATION_END -->
-
-Review purpose: inspect the current implementation plan and decide PASS or BLOCKED; reviewer product: codex; role: independent-reviewer; capability: control-plane-high; independence: a user-opened new-window instance distinct from the plan author and executor; authority: governed Review evidence only.
-
 ## Non-Negotiables
 
-- Codex does not edit implementation files while this skill is active; return
-  to the change gate if the user requests implementation.
+- Codex does not edit implementation files while this skill is active; leave
+  standalone Review and apply Route Selection if implementation is requested.
 - Do not substitute an unassigned product or instance for a canonical executor or reviewer.
 - Every governed Brief lists allowed/forbidden files, abort conditions, attempt
   Report path, critical evidence, and canonical status fingerprint.
