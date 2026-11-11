@@ -167,7 +167,14 @@ Required fields include every field in the example.
   `governed-review-evidence` and never grants canonical decision authority.
 - The control plane is product `codex`, role `control-plane`, profile
   `control-plane-high`. It alone records authoritative transitions and final
-  completion.
+  completion. One exception: a mode-0600 single-entry
+  `references/external-control-plane-rebinds.json` pin may replace that owner
+  with one pinned `grok-cli` control plane on one external handoff. The new
+  owner instance may equal that external handoff's executor instance and must
+  differ from the bound reviewer. The move stays in
+  `awaiting-final-verification` with both final gates `pending`, increments
+  revision by one, and grants no Git, install, deploy, business-write, or
+  completion authority. Without that pin, the owner product stays `codex`.
 - The executor role is `executor`; its profile is bounded by the assigned
   capability ceiling. A standard or strict reviewer uses role
   `independent-reviewer` and profile `control-plane-high`.
@@ -253,7 +260,7 @@ This is an external execution contract: `executor` is `external-agent`,
 `approved-implementation`, approved `self-evolution`, or `direct-change`.
 The immutable product/instance/role/profile assignments determine who executes
 and independently Reviews; only the bound Codex `control_plane_owner` records
-the authoritative decision.
+the authoritative decision, except the single external pin described above.
 
 ## Lifecycle And Review Loop
 

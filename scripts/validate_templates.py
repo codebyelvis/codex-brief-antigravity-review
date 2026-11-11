@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -717,7 +718,12 @@ def _validate_schema6_reviewer_assignment(data: dict, label: str) -> None:
             executor["agent_instance_id"],
             reviewer["agent_instance_id"],
         }
-        if len(instance_ids) != 3:
+        pinned_executor_owner = (
+            _external_grok_owner_allowed(data)
+            and owner["agent_instance_id"] == executor["agent_instance_id"]
+            and reviewer["agent_instance_id"] != owner["agent_instance_id"]
+        )
+        if len(instance_ids) != 3 and not pinned_executor_owner:
             raise AssertionError(
                 f"{label}: control-plane, executor, and reviewer instance IDs must differ"
             )
@@ -884,7 +890,11 @@ def _validate_schema6_handoff_contract(data: dict, label: str) -> None:
         SCHEMA6_AGENT_PRODUCTS,
         label,
     )
-    if data["control_plane_owner"]["agent_product"] != "codex":
+    _load_external_rebind_pin()
+    if (
+        data["control_plane_owner"]["agent_product"] != "codex"
+        and not _external_grok_owner_allowed(data)
+    ):
         raise AssertionError(f"{label}: current control_plane_owner must use Codex")
     _validate_assignment(
         data["executor_assignment"],
@@ -997,7 +1007,18 @@ def _validate_confirmation_lease_artifact(
     if lease["decision_id"] != ref["decision_id"]:
         raise AssertionError(f"{label}: Confirmation Lease decision_id does not match canonical status")
     if lease["owner_instance_id"] != data["control_plane_owner"]["agent_instance_id"]:
-        raise AssertionError(f"{label}: Confirmation Lease owner_instance_id does not match control plane")
+        entry = _load_external_rebind_pin()
+        previous_owner = (
+            entry["previous_control_plane_owner"]["agent_instance_id"] if entry else None
+        )
+        pinned_previous_owner = (
+            entry is not None
+            and entry["change_id"] == data["change_id"]
+            and data["control_plane_owner"] == entry["control_plane_owner"]
+            and lease["owner_instance_id"] == previous_owner
+        )
+        if not pinned_previous_owner:
+            raise AssertionError(f"{label}: Confirmation Lease owner_instance_id does not match control plane")
     if lease["decision_source"] != data["decision_source"]:
         raise AssertionError(f"{label}: Confirmation Lease decision_source does not match canonical status")
     if lease["risk_profile"] != data["risk_profile"]:
@@ -1325,8 +1346,16 @@ def _validate_evidence_artifacts(
             data,
             f"{label}:previous-transition",
             legacy_parent=legacy_parent,
+            previous_status_sha256=previous_status_sha256,
         )
         transition_key = _transition_artifact_field(previous, data)
+        if _external_owner_move(
+            previous,
+            data,
+            previous_status_sha256,
+            legacy_parent=legacy_parent,
+        ):
+            transition_key = None
         if transition_key is not None:
             manifest = manifests.get(transition_key)
             if manifest is None:
@@ -1383,6 +1412,7 @@ def _validate_transition(
     label: str,
     *,
     legacy_parent: bool,
+    previous_status_sha256: str | None = None,
 ) -> None:
     contract_validator = (
         validate_legacy_handoff_contract if legacy_parent else validate_handoff_contract
@@ -1392,6 +1422,12 @@ def _validate_transition(
         contract_validator(after, f"{label}:after")
     if before["schema_version"] != after["schema_version"]:
         raise AssertionError(f"{label}: schema version cannot change in place")
+    external_move = _external_owner_move(
+        before,
+        after,
+        previous_status_sha256,
+        legacy_parent=legacy_parent,
+    )
     if legacy_parent:
         immutable_fields = (
             LEGACY_IMMUTABLE_FIELDS
@@ -1401,6 +1437,8 @@ def _validate_transition(
     else:
         immutable_fields = SCHEMA6_IMMUTABLE_FIELDS
     for key in immutable_fields:
+        if external_move and key == "control_plane_owner":
+            continue
         if key not in after or before[key] != after[key]:
             raise AssertionError(f"{label}: readonly field changed: {key}")
     contract_validator(after, f"{label}:after")
@@ -1527,11 +1565,12 @@ def _validate_transition(
         ):
             raise AssertionError(f"{label}: final Review cannot replace verification evidence")
     if current_state == "awaiting-final-verification" and next_state == "awaiting-final-verification":
-        if _result_tuple(before) != ("pass", "pending", "pending") or _result_tuple(after) != ("pass", "pass", "pending"):
-            raise AssertionError(f"{label}: awaiting self-transition only persists final verification PASS")
-        for key in ("attempt_report_artifact", "last_review_artifact"):
-            if before[key] != after[key]:
-                raise AssertionError(f"{label}: final verification cannot rewrite {key}")
+        if not external_move:
+            if _result_tuple(before) != ("pass", "pending", "pending") or _result_tuple(after) != ("pass", "pass", "pending"):
+                raise AssertionError(f"{label}: awaiting self-transition only persists final verification PASS")
+            for key in ("attempt_report_artifact", "last_review_artifact"):
+                if before[key] != after[key]:
+                    raise AssertionError(f"{label}: final verification cannot rewrite {key}")
     if next_state == "complete":
         if _result_tuple(before) != ("pass", "pass", "pending"):
             raise AssertionError(f"{label}: complete requires persisted final verification PASS")
@@ -1542,8 +1581,16 @@ def _validate_transition(
                 raise AssertionError(f"{label}: final Review cannot replace {key}")
 
 
-def validate_transition(before: dict, after: dict, label: str) -> None:
-    _validate_transition(before, after, label, legacy_parent=False)
+def validate_transition(
+    before: dict, after: dict, label: str, previous_status_sha256: str | None = None
+) -> None:
+    _validate_transition(
+        before,
+        after,
+        label,
+        legacy_parent=False,
+        previous_status_sha256=previous_status_sha256,
+    )
 
 
 def _validate_legacy_transition(before: dict, after: dict, label: str) -> None:
@@ -1561,6 +1608,319 @@ def validate_frontmatter(skill: str) -> None:
     ]
     if keys != ["name", "description"]:
         raise AssertionError(f"SKILL.md: frontmatter keys must be name, description only; got {keys}")
+
+
+EXTERNAL_REBIND_PIN_KEYS = {
+    "amendment_kind", "scope", "change_id", "previous_control_plane_owner",
+    "control_plane_owner", "previous_status_sha256",
+}
+EXTERNAL_MOVE_DIFF = {
+    "control_plane_owner", "contract_revision", "blocked_reason", "resume_condition",
+}
+
+
+def _external_rebind_pin_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "references" / "external-control-plane-rebinds.json"
+
+
+def _load_external_rebind_pin() -> dict | None:
+    """Read the one external owner move. Absence keeps the Codex-only owner."""
+    path = _external_rebind_pin_path()
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise AssertionError("external control-plane rebind: pin must be a regular non-symlink file")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise AssertionError("external control-plane rebind: pin mode must be 0600")
+    payload = path.read_bytes()
+    if not payload.strip():
+        return None
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise AssertionError("external control-plane rebind pin: duplicate JSON key")
+            value[key] = item
+        return value
+
+    try:
+        data = json.loads(payload.decode(), object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as exc:
+        raise AssertionError("external control-plane rebind pin: invalid JSON") from exc
+    if isinstance(data, list):
+        if len(data) != 1:
+            return None
+        _validate_external_rebind_entry(data[0])
+        return data[0]
+    raise AssertionError("external control-plane rebind: pin must be a one-entry JSON array")
+
+
+def _validate_external_rebind_entry(entry) -> None:
+    if not isinstance(entry, dict) or set(entry) != EXTERNAL_REBIND_PIN_KEYS:
+        raise AssertionError("external control-plane rebind: pin entry keys are invalid")
+    if entry["amendment_kind"] != "external-control-plane-rebind" or entry["scope"] != "this-change-only":
+        raise AssertionError("external control-plane rebind: kind and scope must stay task-scoped")
+    if not isinstance(entry["change_id"], str) or re.fullmatch(
+        r"[a-z0-9]+(?:-[a-z0-9]+)*", entry["change_id"]
+    ) is None:
+        raise AssertionError("external control-plane rebind: invalid change_id")
+    _validate_assignment(
+        entry["previous_control_plane_owner"], "previous_control_plane_owner",
+        "control-plane", {"control-plane-high"}, {"codex"}, "external control-plane rebind",
+    )
+    _validate_assignment(
+        entry["control_plane_owner"], "control_plane_owner",
+        "control-plane", {"control-plane-high"}, {"grok-cli"}, "external control-plane rebind",
+    )
+    digest = entry["previous_status_sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AssertionError("external control-plane rebind: previous_status_sha256 is invalid")
+
+
+def _external_grok_owner_allowed(data: dict) -> bool:
+    """True when the current owner is exactly the single pinned Grok owner."""
+    plane = data.get("control_plane_owner")
+    if not isinstance(plane, dict) or plane.get("agent_product") != "grok-cli":
+        return False
+    entry = _load_external_rebind_pin()
+    if entry is None or entry["change_id"] != data.get("change_id"):
+        return False
+    if plane != entry["control_plane_owner"]:
+        raise AssertionError("external control-plane rebind: owner does not match the pin")
+    reviewer = data.get("reviewer_assignment") or {}
+    owner_id = plane["agent_instance_id"]
+    if owner_id == reviewer.get("agent_instance_id"):
+        raise AssertionError(
+            "external control-plane rebind: new owner must differ from the reviewer"
+        )
+    return True
+
+
+def _markdown_visible_outside_html_comment(
+    line: str,
+    in_comment: bool,
+) -> tuple[str, bool]:
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(line):
+        if in_comment:
+            comment_end = line.find("-->", cursor)
+            if comment_end == -1:
+                return "".join(visible), True
+            cursor = comment_end + 3
+            in_comment = False
+        else:
+            comment_start = line.find("<!--", cursor)
+            if comment_start == -1:
+                visible.append(line[cursor:])
+                break
+            visible.append(line[cursor:comment_start])
+            cursor = comment_start + 4
+            in_comment = True
+    return "".join(visible), in_comment
+
+
+def _markdown_container_position(line: str) -> int:
+    position = 0
+    container_patterns = (
+        r" {0,3}>[ \t]?",
+        r" {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+",
+    )
+    while position < len(line):
+        for pattern in container_patterns:
+            container = re.match(pattern, line[position:])
+            if container is not None:
+                position += container.end()
+                break
+        else:
+            break
+    return position
+
+
+def _markdown_fence_candidate(
+    line: str,
+    *,
+    closing: bool = False,
+) -> tuple[str, str] | None:
+    position = _markdown_container_position(line)
+    candidate = re.match(
+        r"^ {0,3}(`{3,}|~{3,})(.*)$",
+        line[position:],
+    )
+    if candidate is not None:
+        return candidate.group(1), candidate.group(2)
+    if closing:
+        continuation = re.match(
+            r"^ {2,}(`{3,}|~{3,})(.*)$",
+            line[position:],
+        )
+        if continuation is not None:
+            return continuation.group(1), continuation.group(2)
+    return None
+
+
+def _markdown_heading_spans(
+    text: str,
+) -> list[tuple[str, int, int, int]]:
+    headings: list[tuple[str, int, int, int]] = []
+    fence_char: str | None = None
+    fence_length = 0
+    in_html_comment = False
+    offset = 0
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        line_end = offset + len(line)
+        if fence_char is not None:
+            closing_fence = _markdown_fence_candidate(
+                line,
+                closing=True,
+            )
+            if closing_fence is not None:
+                marker, suffix = closing_fence
+                if (
+                    marker[0] == fence_char
+                    and len(marker) >= fence_length
+                    and not suffix.strip()
+                ):
+                    fence_char = None
+                    fence_length = 0
+        else:
+            visible_line, in_html_comment = (
+                _markdown_visible_outside_html_comment(
+                    line,
+                    in_html_comment,
+                )
+            )
+            opening_fence = _markdown_fence_candidate(visible_line)
+            if opening_fence is not None and not (
+                opening_fence[0].startswith("`")
+                and "`" in opening_fence[1]
+            ):
+                marker = opening_fence[0]
+                fence_char = marker[0]
+                fence_length = len(marker)
+            else:
+                heading_match = re.fullmatch(
+                    r"(#{1,6})[ \t]+[^\r\n]+",
+                    visible_line,
+                )
+                if heading_match is not None and line.startswith("#"):
+                    headings.append(
+                        (
+                            visible_line,
+                            len(heading_match.group(1)),
+                            offset,
+                            line_end,
+                        )
+                    )
+        offset += len(raw_line)
+    return headings
+
+
+def _markdown_owned_section(
+    text: str,
+    heading: str,
+    label: str,
+) -> tuple[str, int, int]:
+    heading_syntax = re.fullmatch(r"(#{1,6})[ \t]+[^\r\n]+", heading)
+    if heading_syntax is None:
+        raise AssertionError(f"{label}: invalid Markdown heading {heading!r}")
+    headings = _markdown_heading_spans(text)
+    matches = [item for item in headings if item[0] == heading]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"{label}: expected exactly one Markdown heading {heading!r}; "
+            f"found {len(matches)}"
+        )
+    _, _, heading_start, section_start = matches[0]
+    heading_level = len(heading_syntax.group(1))
+    section_end = len(text)
+    for _, level, start, _ in headings:
+        if start > heading_start and level <= heading_level:
+            section_end = start
+            break
+    return text[section_start:section_end], heading_start, section_end
+
+
+def _resume_json(text: str, label: str) -> dict:
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise AssertionError(f"{label}: duplicate JSON key")
+            value[key] = item
+        return value
+    try:
+        data = json.loads(text, object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as exc:
+        raise AssertionError(f"{label}: invalid JSON record") from exc
+    if not isinstance(data, dict):
+        raise AssertionError(f"{label}: record must be a mapping")
+    return data
+
+
+def _resume_section(text: str, heading: str, label: str) -> dict:
+    body, _, _ = _markdown_owned_section(text, "## " + heading, label)
+    fence = re.fullmatch(r"\s*```json[ \t]*\n(.*?)\n```[ \t]*\s*", body, re.S)
+    if fence is None:
+        raise AssertionError(f"{label}: expected exactly one JSON fence")
+    return _resume_json(fence[1], label)
+
+
+def require_external_control_plane_section(text: str, data: dict, label: str) -> None:
+    """The active Grok owner status must repeat the single pin entry."""
+    plane = data.get("control_plane_owner")
+    if not isinstance(plane, dict) or plane.get("agent_product") != "grok-cli":
+        return
+    entry = _load_external_rebind_pin()
+    if entry is None or entry["change_id"] != data.get("change_id") or entry["control_plane_owner"] != plane:
+        return
+    observed = _resume_section(text, "External Control Plane Rebind", label)
+    if observed != entry:
+        raise AssertionError(f"{label}: external control-plane rebind section must equal the pin entry")
+
+
+def _external_owner_move(
+    before: dict,
+    after: dict,
+    previous_status_sha256: str | None,
+    *,
+    legacy_parent: bool,
+) -> bool:
+    """Accept only the pinned owner move. Any other owner change stays readonly."""
+    if legacy_parent or not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    entry = _load_external_rebind_pin()
+    if entry is None:
+        return False
+    if before.get("change_id") != entry["change_id"] or after.get("change_id") != entry["change_id"]:
+        return False
+    if (
+        before.get("control_plane_owner") != entry["previous_control_plane_owner"]
+        or after.get("control_plane_owner") != entry["control_plane_owner"]
+    ):
+        return False
+    if previous_status_sha256 != entry["previous_status_sha256"]:
+        raise AssertionError("external control-plane rebind: previous status hash mismatch")
+    if (
+        before.get("lifecycle_state") != "awaiting-final-verification"
+        or after.get("lifecycle_state") != "awaiting-final-verification"
+    ):
+        raise AssertionError(
+            "external control-plane rebind: lifecycle must stay awaiting-final-verification"
+        )
+    pending = ("pass", "pending", "pending")
+    if _result_tuple(before) != pending or _result_tuple(after) != pending:
+        raise AssertionError("external control-plane rebind: final gates must stay pending")
+    if after.get("contract_revision") != before.get("contract_revision") + 1:
+        raise AssertionError("external control-plane rebind: revision must increase by exactly one")
+    for key in set(before) | set(after):
+        if key not in EXTERNAL_MOVE_DIFF and before.get(key) != after.get(key):
+            raise AssertionError(f"external control-plane rebind: unexpected field change: {key}")
+    return True
 
 
 def validate_reference_links(root: Path, skill: str) -> None:
@@ -1737,8 +2097,10 @@ def main(argv: list[str] | None = None) -> int:
             )
     if args.status:
         status_path = args.status.resolve()
-        status = extract_handoff_contract(read(status_path), str(args.status))
+        status_text = read(status_path)
+        status = extract_handoff_contract(status_text, str(args.status))
         validate_handoff_contract(status, str(args.status))
+        require_external_control_plane_section(status_text, status, str(args.status))
         previous = None
         previous_sha256 = None
         if args.previous_status:
@@ -1746,6 +2108,9 @@ def main(argv: list[str] | None = None) -> int:
             previous_text = read(previous_path)
             previous = extract_handoff_contract(previous_text, str(args.previous_status))
             validate_handoff_contract(previous, str(args.previous_status))
+            require_external_control_plane_section(
+                previous_text, previous, str(args.previous_status)
+            )
             validate_evidence_artifacts(previous, args.artifact_root, str(args.previous_status))
             previous_sha256 = hashlib.sha256(previous_path.read_bytes()).hexdigest()
         validate_evidence_artifacts(
